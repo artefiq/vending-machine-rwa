@@ -31,6 +31,9 @@ except Exception as e:
     print(f"[ERROR] Koneksi: {e}")
     exit()
 
+# Ubah address menjadi format checksum
+CONTRACT_ADDRESS = w3.to_checksum_address(CONTRACT_ADDRESS)
+
 # Setup Kontrak
 contract = w3.eth.contract(address=CONTRACT_ADDRESS, abi=json.loads(CONTRACT_ABI))
 

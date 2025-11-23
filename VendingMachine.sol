@@ -42,8 +42,7 @@ contract VendingMachineNative {
         mapping(address => bool) hasVoted;
     }
     // Karena struct punya mapping, menyimpan di array dan akses via ID
-    Proposal[] public proposals; 
-
+    Proposal[] private proposals;
     // --- 5. EVENTS ---
     event CoffeeOrdered(address indexed buyer, uint256 timestamp);
     event DividendClaimed(address indexed investor, uint256 amount);
@@ -187,5 +186,20 @@ contract VendingMachineNative {
             p.executed = true;
             emit VendorAdded(p.proposedVendor);
         }
+    }
+
+    function getProposal(uint256 _id) external view returns (
+        address proposedVendor, 
+        string memory description, 
+        uint256 voteCount, 
+        bool executed
+    ) {
+        require(_id < proposals.length, "ID tidak valid");
+        Proposal storage p = proposals[_id];
+        return (p.proposedVendor, p.description, p.voteCount, p.executed);
+    }
+
+    function getProposalsCount() external view returns (uint256) {
+        return proposals.length;
     }
 }
