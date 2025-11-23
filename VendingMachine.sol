@@ -247,4 +247,38 @@ contract VendingMachineNative {
     function getProposalsCount() external view returns (uint256) {
         return proposals.length;
     }
+
+
+    // --- SAHAM FUNCTIONS ---
+
+    uint256 public sharePrice = 1000; // Contoh: 1 Lembar Saham = 1000 IDRT
+
+    // Fungsi Baru: INVESTOR BELI SAHAM
+    function buyShares(uint256 amount) external noReentrancy {
+        // 1. Hitung total harga
+        uint256 cost = amount * sharePrice;
+
+        // 2. Cek saldo IDRT pembeli
+        require(paymentToken.balanceOf(msg.sender) >= cost, "Saldo IDRT kurang");
+
+        // 3. Cek stok Saham di gudang (MesinShare)
+        // Kita cek saldo milik address(assetToken) itu sendiri
+        require(assetToken.balanceOf(address(assetToken)) >= amount, "Saham habis!");
+
+        // --- PROSES TRANSAKSI ---
+        
+        // A. Tarik IDRT dari Pembeli ke Vending Machine (sebagai modal usaha)
+        bool successPayment = paymentToken.transferFrom(msg.sender, address(this), cost);
+        require(successPayment, "Gagal tarik IDRT");
+
+        // B. Kirim Saham dari Gudang (MesinShare) ke Pembeli
+        // Karena MesinShare sudah men-approve VendingMachine (di langkah sebelumnya),
+        // kita bisa pakai transferFrom.
+        // Dari: address(assetToken) -> Gudang
+        // Ke: msg.sender -> Investor
+        bool successShare = assetToken.transferFrom(address(assetToken), msg.sender, amount);
+        require(successShare, "Gagal kirim Saham");
+
+        // (Opsional) Update dividen tracker jika perlu, tapi untuk simpelnya begini dulu.
+    }
 }
