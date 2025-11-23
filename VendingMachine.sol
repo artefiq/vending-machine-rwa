@@ -21,6 +21,9 @@ contract VendingMachineNative {
     address public owner;       // Admin/Deployer
     uint256 public coffeePrice; // Harga Kopi
     uint256 public totalRevenue;
+    
+    // Variabel Modal Pokok
+    uint256 public cogsPerCup; 
 
     // --- 2. KEAMANAN ---
     bool private locked; 
@@ -40,20 +43,30 @@ contract VendingMachineNative {
         uint256 voteCount;
         bool executed;
         mapping(address => bool) hasVoted;
+        uint256 endTime;
     }
     // Karena struct punya mapping, menyimpan di array dan akses via ID
     Proposal[] private proposals;
+
     // --- 5. EVENTS ---
     event CoffeeOrdered(address indexed buyer, uint256 timestamp);
     event DividendClaimed(address indexed investor, uint256 amount);
-    event VendorPaid(address indexed vendor, uint256 amount);
-    event VendorAdded(address indexed vendor);
+    event ProposalCreated(uint256 id, address vendor, string description);
+    event Voted(uint256 id, address voter, uint256 weight);
+    event VendorWhitelisted(address vendor);
+    event RestockPaid(address vendor, uint256 amount);
 
     // --- CONSTRUCTOR ---
-    constructor(address _paymentToken, address _assetToken, uint256 _price) {
+    constructor(
+        address _paymentToken, 
+        address _assetToken, 
+        uint256 _price,
+        uint256 _cogs
+    ) {
         paymentToken = IERC20(_paymentToken);
         assetToken = IERC20(_assetToken);
         coffeePrice = _price;
+        cogsPerCup = _cogs; // Set modal awal
         owner = msg.sender;
         
         // Tambahkan owner sebagai vendor awal (untuk testing)
@@ -92,10 +105,17 @@ contract VendingMachineNative {
         // Catat Revenue
         totalRevenue += coffeePrice;
 
+        uint256 profit = 0;
+        if (coffeePrice > cogsPerCup) {
+            profit = coffeePrice - cogsPerCup;
+        } else {
+            profit = 0;
+        }
+
         // Hitung Dividen (Update global per-share)
         uint256 supply = assetToken.totalSupply();
-        if (supply > 0) {
-            magnifiedDividendPerShare += (coffeePrice * MAGNITUDE) / supply;
+        if (supply > 0 && profit > 0) {
+            magnifiedDividendPerShare += (profit * MAGNITUDE) / supply;
         }
 
         // EMIT EVENT (Untuk Python/IoT)
@@ -141,33 +161,41 @@ contract VendingMachineNative {
     // =========================================================
     // FUNGSI 3: BAYAR VENDOR (WHITELIST ONLY)
     // =========================================================
-    function payOperationalCost(address _vendor, uint256 _amount) external onlyOwner {
+    function restockInventory(address _vendor, uint256 _amount) external onlyOwner {
+        // Validasi Whitelist: Owner tidak bisa kirim ke sembarang alamat
         require(isWhitelistedVendor[_vendor], "Vendor Ilegal/Tidak Terdaftar!");
         require(paymentToken.balanceOf(address(this)) >= _amount, "Kas kosong");
 
         bool success = paymentToken.transfer(_vendor, _amount);
         require(success, "Gagal bayar vendor");
 
-        emit VendorPaid(_vendor, _amount);
+        // Menggunakan event baru agar lebih spesifik
+        emit RestockPaid(_vendor, _amount);
     }
 
     // =========================================================
     // FUNGSI 4: VOTING VENDOR BARU (GOVERNANCE)
     // =========================================================
     function proposeNewVendor(address _vendor, string memory _desc) external {
-        require(assetToken.balanceOf(msg.sender) > 0, "Bukan Investor");
-        
         proposals.push();
-        Proposal storage p = proposals[proposals.length - 1];
+        uint256 id = proposals.length - 1;
+        Proposal storage p = proposals[id];
+        
         p.proposedVendor = _vendor;
         p.description = _desc;
-        // p.voteCount & p.executed otomatis 0/false
+        p.voteCount = 0;
+        p.executed = false;
+        p.endTime = block.timestamp + 15 minutes; // batas waktu untuk demo
+        
+        emit ProposalCreated(id, _vendor, _desc);
     }
 
     function voteProposal(uint256 _id) external {
         // Validasi dasar
         require(_id < proposals.length, "ID Salah");
         Proposal storage p = proposals[_id];
+        
+        require(block.timestamp < p.endTime, "Waktu voting habis");
         require(!p.executed, "Sudah dieksekusi");
         require(!p.hasVoted[msg.sender], "Sudah vote");
 
@@ -179,24 +207,41 @@ contract VendingMachineNative {
         p.hasVoted[msg.sender] = true;
         p.voteCount += weight;
 
-        // Cek Eksekusi (> 50% Supply)
+        emit Voted(_id, msg.sender, weight);
+    }
+
+    function executeProposal(uint256 _id) external {
+        require(_id < proposals.length, "ID Salah");
+        Proposal storage p = proposals[_id];
+        
+        require(!p.executed, "Sudah dieksekusi");
+        require(block.timestamp >= p.endTime, "Voting belum selesai");
+
         uint256 totalSupply = assetToken.totalSupply();
+        
+        // Syarat menang: Lebih dari 50% total supply token setuju
         if (p.voteCount > totalSupply / 2) {
             isWhitelistedVendor[p.proposedVendor] = true;
             p.executed = true;
-            emit VendorAdded(p.proposedVendor);
+            emit VendorWhitelisted(p.proposedVendor);
+        } else {
+            // Jika gagal, tandai executed tapi jangan whitelist (Voting gagal)
+            p.executed = true; 
         }
     }
+
+    // --- VIEW FUNCTIONS ---
 
     function getProposal(uint256 _id) external view returns (
         address proposedVendor, 
         string memory description, 
         uint256 voteCount, 
-        bool executed
+        bool executed,
+        uint256 endTime
     ) {
         require(_id < proposals.length, "ID tidak valid");
         Proposal storage p = proposals[_id];
-        return (p.proposedVendor, p.description, p.voteCount, p.executed);
+        return (p.proposedVendor, p.description, p.voteCount, p.executed, p.endTime);
     }
 
     function getProposalsCount() external view returns (uint256) {
