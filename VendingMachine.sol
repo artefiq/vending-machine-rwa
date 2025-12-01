@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-/**
- * @dev Interface Manual untuk berinteraksi dengan Token (IDRT / $MESIN).
- * Mendefinisikan kode ini agar kontrak kita tahu cara berinteraksi dengan token lain.
- */
 interface IERC20 {
     function totalSupply() external view returns (uint256);
     function balanceOf(address account) external view returns (uint256);
@@ -12,27 +8,41 @@ interface IERC20 {
     function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
 }
 
-contract VendingMachineNative {
+contract VendingMachineFleet {
     
     // --- 1. VARIABEL UTAMA ---
     IERC20 public paymentToken; // Token Pembayaran (IDRT)
-    IERC20 public assetToken;   // Token Saham ($MESIN)
-    
-    address public owner;       // Admin/Deployer
-    uint256 public coffeePrice; // Harga Kopi
+    IERC20 public assetToken; // Token Saham ($MESIN)
+    address public owner; // Admin/Deployer
+    uint256 public coffeePrice = 15000 * 10**18; // Harga Kopi
     uint256 public totalRevenue;
-    
     // Variabel Modal Pokok
-    uint256 public cogsPerCup; 
+    uint256 public cogsPerCup = 5000 * 10**18;
+    // --- 2. MANAJEMEN ARMADA ---
+    struct Machine {
+        uint256 id;
+        string location;
+        bool isActive;
+        uint256 totalSales; 
+    }
+    mapping(uint256 => Machine) public machines; 
+    uint256 public machineCount;
 
-    // --- 2. KEAMANAN ---
-    bool private locked; 
+    // --- 3. KEUANGAN ---
+    uint256 public accumulatedRevenue;  
+    uint256 public growthFund;          
+    
+    uint256 public constant REINVEST_RATE = 20; 
+    uint256 public constant DIVIDEND_RATE = 80; 
 
-    // --- 3. DIVIDEN ---
-    uint256 public constant MAGNITUDE = 2**128;
+    // Sistem Dividen
+    uint256 constant MAGNITUDE = 2**128;
     uint256 public magnifiedDividendPerShare;
     mapping(address => int256) public magnifiedDividendCorrections;
     mapping(address => uint256) public withdrawnDividends;
+
+    // Harga saham (IPO)
+    uint256 public sharePrice = 1000 * 10**18;
 
     // --- 4. GOVERNANCE ---
     mapping(address => bool) public isWhitelistedVendor;
@@ -42,243 +52,211 @@ contract VendingMachineNative {
         string description;
         uint256 voteCount;
         bool executed;
-        mapping(address => bool) hasVoted;
         uint256 endTime;
+        mapping(address => bool) hasVoted;
     }
-    // Karena struct punya mapping, menyimpan di array dan akses via ID
-    Proposal[] private proposals;
+    Proposal[] public proposals;
 
-    // --- 5. EVENTS ---
-    event CoffeeOrdered(address indexed buyer, uint256 timestamp);
-    event DividendClaimed(address indexed investor, uint256 amount);
-    event ProposalCreated(uint256 id, address vendor, string description);
-    event Voted(uint256 id, address voter, uint256 weight);
+    // --- 5. KEAMANAN ---
+    bool private locked;
+
+    // --- EVENTS ---
+    event CoffeeOrdered(uint256 indexed machineId, address buyer, uint256 amount);
+    event MachineAdded(uint256 id, string location);
+    event OpexPaid(address vendor, uint256 amount, string reason);
+    event ProfitDistributed(uint256 dividendAmount, uint256 growthAmount);
+    event GrowthFundUsed(address vendor, uint256 amount, string reason);
+    event DividendClaimed(address investor, uint256 amount);
     event VendorWhitelisted(address vendor);
-    event RestockPaid(address vendor, uint256 amount);
+    event PriceUpdated(uint256 newPrice); // Event baru jika harga berubah
 
-    // --- CONSTRUCTOR ---
-    constructor(
-        address _paymentToken, 
-        address _assetToken, 
-        uint256 _price,
-        uint256 _cogs
-    ) {
+    // Constructor: Tambahkan _coffeePrice
+    constructor(address _paymentToken, address _assetToken, uint256 _coffeePrice) {
         paymentToken = IERC20(_paymentToken);
         assetToken = IERC20(_assetToken);
-        coffeePrice = _price;
-        cogsPerCup = _cogs; // Set modal awal
+        coffeePrice = _coffeePrice; // Set harga awal di sini
         owner = msg.sender;
-        
-        // Tambahkan owner sebagai vendor awal (untuk testing)
-        isWhitelistedVendor[msg.sender] = true;
+        isWhitelistedVendor[msg.sender] = true; 
     }
 
-    // --- MODIFIERS MANUAL ---
+    modifier onlyOwner() { require(msg.sender == owner, "Hanya Admin"); _; }
+    modifier noReentrancy() { require(!locked, "Reentrancy!"); locked = true; _; locked = false; }
+
+    // =========================================================
+    // FUNGSI ADMIN: UBAH HARGA
+    // =========================================================
+    // Fitur baru: Admin bisa mengubah harga kopi global jika inflasi
+    function setCoffeePrice(uint256 _newPrice) external onlyOwner {
+        coffeePrice = _newPrice;
+        emit PriceUpdated(_newPrice);
+    }
+
+    function setCogs(uint256 _newCogs) external onlyOwner {
+        cogsPerCup = _newCogs;
+    }
+
+    // =========================================================
+    // BAGIAN A: SKALABILITAS
+    // =========================================================
+    function addMachine(string memory _location) external onlyOwner {
+        machineCount++;
+        machines[machineCount] = Machine(machineCount, _location, true, 0);
+        emit MachineAdded(machineCount, _location);
+    }
+
+    // =========================================================
+    // BAGIAN B: TRANSAKSI PELANGGAN (PERBAIKAN UTAMA)
+    // =========================================================
     
-    // Pengganti 'Ownable'
-    modifier onlyOwner() {
-        require(msg.sender == owner, "Hanya Owner");
-        _;
-    }
+    function buyCoffee(uint256 _machineId) external noReentrancy {
+        require(machines[_machineId].isActive, "Mesin Tidak Aktif");
+        
+        uint256 priceToPay = coffeePrice; // Misal 15.000
+        require(paymentToken.balanceOf(msg.sender) >= priceToPay, "Saldo Kurang");
 
-    // Pengganti 'ReentrancyGuard'
-    modifier noReentrancy() {
-        require(!locked, "Reentrancy terdeteksi!");
-        locked = true;
-        _;
-        locked = false;
-    }
+        // 1. Tarik FULL Harga (15.000) ke Contract
+        require(paymentToken.transferFrom(msg.sender, address(this), priceToPay), "Gagal Bayar");
 
-    // =========================================================
-    // FUNGSI 1: BELI KOPI (TRIGGER IOT)
-    // =========================================================
-    function buyCoffee() external noReentrancy {
-        // Cek saldo manual
-        uint256 userBal = paymentToken.balanceOf(msg.sender);
-        require(userBal >= coffeePrice, "Saldo kurang");
+        // 2. Akumulasi Data Omzet
+        machines[_machineId].totalSales += priceToPay;
+        accumulatedRevenue += priceToPay;
 
-        // Transfer: Pelanggan -> Kontrak
-        // Cek return value 'success' secara manual
-        bool success = paymentToken.transferFrom(msg.sender, address(this), coffeePrice);
-        require(success, "Transfer gagal");
-
-        // Catat Revenue
-        totalRevenue += coffeePrice;
-
-        uint256 profit = 0;
-        if (coffeePrice > cogsPerCup) {
-            profit = coffeePrice - cogsPerCup;
-        } else {
-            profit = 0;
+        // --- LOGIKA POTONG MODAL (BARU) ---
+        
+        // Hitung Profit Kotor (Gross Profit)
+        // Profit = Harga Jual (15rb) - Modal (5rb) = 10rb
+        uint256 grossProfit = 0;
+        if (priceToPay > cogsPerCup) {
+            grossProfit = priceToPay - cogsPerCup;
         }
 
-        // Hitung Dividen (Update global per-share)
-        uint256 supply = assetToken.totalSupply();
-        if (supply > 0 && profit > 0) {
-            magnifiedDividendPerShare += (profit * MAGNITUDE) / supply;
+        // Uang 5.000 (Modal) DIBIARKAN mengendap di contract (accumulatedRevenue)
+        // Uang ini nanti dipakai Owner lewat 'payOperationalCost' untuk beli stok.
+
+        // --- ALOKASI PROFIT (10.000) ---
+        
+        // Dari 10rb Profit:
+        // 20% (2rb) -> Growth Fund (Beli Mesin Baru)
+        // 80% (8rb) -> Dividen Investor
+        
+        if (grossProfit > 0) {
+            uint256 amountGrowth = (grossProfit * REINVEST_RATE) / 100; 
+            uint256 amountDividend = grossProfit - amountGrowth;
+
+            // Masukkan ke Tabungan Ekspansi
+            growthFund += amountGrowth;
+
+            // Bagikan Dividen ke Investor
+            if (assetToken.totalSupply() > 0) {
+                magnifiedDividendPerShare += (amountDividend * MAGNITUDE) / assetToken.totalSupply();
+                emit ProfitDistributed(amountDividend, amountGrowth);
+            }
         }
 
-        // EMIT EVENT (Untuk Python/IoT)
-        emit CoffeeOrdered(msg.sender, block.timestamp);
+        // 3. Trigger IoT
+        emit CoffeeOrdered(_machineId, msg.sender, priceToPay);
     }
 
     // =========================================================
-    // FUNGSI 2: KLAIM PROFIT (INVESTOR)
+    // BAGIAN C: OPERASIONAL
     // =========================================================
+
+    function payOperationalCost(address _vendor, uint256 _amount, string memory _note) external onlyOwner {
+        require(isWhitelistedVendor[_vendor], "Vendor Ilegal");
+        require(paymentToken.balanceOf(address(this)) >= _amount, "Kas Kurang");
+        
+        paymentToken.transfer(_vendor, _amount);
+        emit OpexPaid(_vendor, _amount, _note);
+    }
+
+    function distributeNetProfit(uint256 _amountToDistribute) external onlyOwner {
+        require(paymentToken.balanceOf(address(this)) >= _amountToDistribute, "Saldo Kurang");
+        require(assetToken.totalSupply() > 0, "Belum ada investor");
+
+        uint256 amountGrowth = (_amountToDistribute * REINVEST_RATE) / 100; 
+        uint256 amountDividend = _amountToDistribute - amountGrowth;        
+
+        growthFund += amountGrowth;
+
+        magnifiedDividendPerShare += (amountDividend * MAGNITUDE) / assetToken.totalSupply();
+        
+        emit ProfitDistributed(amountDividend, amountGrowth);
+    }
+
     function claimDividends() external noReentrancy {
-        // Cek apakah dia investor
         uint256 holderBalance = assetToken.balanceOf(msg.sender);
-        require(holderBalance > 0, "Anda bukan investor");
+        require(holderBalance > 0, "Bukan Investor");
 
-        // Hitung hak dividen (Logika Matematika)
         uint256 _magnifiedDividendPerShare = magnifiedDividendPerShare;
         int256 _correction = magnifiedDividendCorrections[msg.sender];
         
         uint256 accumulatableDividend = uint256(int256(holderBalance * _magnifiedDividendPerShare) + _correction) / MAGNITUDE;
         uint256 withdrawable = accumulatableDividend - withdrawnDividends[msg.sender];
 
-        require(withdrawable > 0, "Tidak ada profit baru");
+        require(withdrawable > 0, "Nihil");
 
-        // Update state sebelum transfer (Checks-Effects-Interactions pattern)
         withdrawnDividends[msg.sender] += withdrawable;
-
-        // Transfer profit ke investor
-        bool success = paymentToken.transfer(msg.sender, withdrawable);
-        require(success, "Gagal kirim profit");
-
+        require(paymentToken.transfer(msg.sender, withdrawable), "Gagal Transfer");
+        
         emit DividendClaimed(msg.sender, withdrawable);
     }
 
-    // Fungsi Pembantu: Dipanggil manual jika investor transfer tokennya ke orang lain
-    // (Agar perhitungan dividen pemilik baru tidak error)
-    function updateCorrection(int256 _amount) external {
-        // Di dunia nyata seharusnya dipanggil otomatis oleh token asset, 
-        // tapi untuk demo manual, akan disederhanakan.
-        // Logika: Correction += diff * magnifiedDividendPerShare
-        // (sementara di skip)
+    // =========================================================
+    // BAGIAN D: SUSTAINABILITY
+    // =========================================================
+
+    function useGrowthFund(address _vendor, uint256 _amount) external onlyOwner {
+        require(isWhitelistedVendor[_vendor], "Vendor Ilegal");
+        require(growthFund >= _amount, "Dana Ekspansi Belum Cukup");
+
+        growthFund -= _amount;
+        paymentToken.transfer(_vendor, _amount);
+
+        emit GrowthFundUsed(_vendor, _amount, "Pembelian Mesin Baru (Reinvestasi)");
     }
 
     // =========================================================
-    // FUNGSI 3: BAYAR VENDOR (WHITELIST ONLY)
+    // BAGIAN E: GOVERNANCE
     // =========================================================
-    function restockInventory(address _vendor, uint256 _amount) external onlyOwner {
-        // Validasi Whitelist: Owner tidak bisa kirim ke sembarang alamat
-        require(isWhitelistedVendor[_vendor], "Vendor Ilegal/Tidak Terdaftar!");
-        require(paymentToken.balanceOf(address(this)) >= _amount, "Kas kosong");
-
-        bool success = paymentToken.transfer(_vendor, _amount);
-        require(success, "Gagal bayar vendor");
-
-        // Menggunakan event baru agar lebih spesifik
-        emit RestockPaid(_vendor, _amount);
-    }
-
-    // =========================================================
-    // FUNGSI 4: VOTING VENDOR BARU (GOVERNANCE)
-    // =========================================================
+    
     function proposeNewVendor(address _vendor, string memory _desc) external {
+        require(assetToken.balanceOf(msg.sender) > 0, "Bukan Investor");
         proposals.push();
-        uint256 id = proposals.length - 1;
-        Proposal storage p = proposals[id];
-        
+        Proposal storage p = proposals[proposals.length - 1];
         p.proposedVendor = _vendor;
         p.description = _desc;
-        p.voteCount = 0;
-        p.executed = false;
-        p.endTime = block.timestamp + 15 minutes; // batas waktu untuk demo
-        
-        emit ProposalCreated(id, _vendor, _desc);
+        p.endTime = block.timestamp + 1 days; 
     }
 
     function voteProposal(uint256 _id) external {
-        // Validasi dasar
-        require(_id < proposals.length, "ID Salah");
         Proposal storage p = proposals[_id];
-        
-        require(block.timestamp < p.endTime, "Waktu voting habis");
-        require(!p.executed, "Sudah dieksekusi");
-        require(!p.hasVoted[msg.sender], "Sudah vote");
+        require(block.timestamp < p.endTime, "Waktu Habis");
+        require(!p.executed && !p.hasVoted[msg.sender], "Invalid");
 
-        // Cek berat suara (jumlah token)
         uint256 weight = assetToken.balanceOf(msg.sender);
-        require(weight > 0, "Tidak punya token");
+        require(weight > 0, "No Token");
 
-        // Catat vote
         p.hasVoted[msg.sender] = true;
         p.voteCount += weight;
 
-        emit Voted(_id, msg.sender, weight);
-    }
-
-    function executeProposal(uint256 _id) external {
-        require(_id < proposals.length, "ID Salah");
-        Proposal storage p = proposals[_id];
-        
-        require(!p.executed, "Sudah dieksekusi");
-        require(block.timestamp >= p.endTime, "Voting belum selesai");
-
-        uint256 totalSupply = assetToken.totalSupply();
-        
-        // Syarat menang: Lebih dari 50% total supply token setuju
-        if (p.voteCount > totalSupply / 2) {
+        if (p.voteCount > assetToken.totalSupply() / 2) {
             isWhitelistedVendor[p.proposedVendor] = true;
             p.executed = true;
             emit VendorWhitelisted(p.proposedVendor);
-        } else {
-            // Jika gagal, tandai executed tapi jangan whitelist (Voting gagal)
-            p.executed = true; 
         }
     }
 
-    // --- VIEW FUNCTIONS ---
+    // =========================================================
+    // BAGIAN F: INVESTOR BELI SAHAM (IPO)
+    // =========================================================
 
-    function getProposal(uint256 _id) external view returns (
-        address proposedVendor, 
-        string memory description, 
-        uint256 voteCount, 
-        bool executed,
-        uint256 endTime
-    ) {
-        require(_id < proposals.length, "ID tidak valid");
-        Proposal storage p = proposals[_id];
-        return (p.proposedVendor, p.description, p.voteCount, p.executed, p.endTime);
-    }
+    function buyShares(uint256 _amount) external noReentrancy {
+        uint256 cost = _amount * sharePrice; 
 
-    function getProposalsCount() external view returns (uint256) {
-        return proposals.length;
-    }
+        require(paymentToken.transferFrom(msg.sender, address(this), cost), "Gagal bayar IDRT");
 
-
-    // --- SAHAM FUNCTIONS ---
-
-    uint256 public sharePrice = 1000; // Contoh: 1 Lembar Saham = 1000 IDRT
-
-    // Fungsi Baru: INVESTOR BELI SAHAM
-    function buyShares(uint256 amount) external noReentrancy {
-        // 1. Hitung total harga
-        uint256 cost = amount * sharePrice;
-
-        // 2. Cek saldo IDRT pembeli
-        require(paymentToken.balanceOf(msg.sender) >= cost, "Saldo IDRT kurang");
-
-        // 3. Cek stok Saham di gudang (MesinShare)
-        // Kita cek saldo milik address(assetToken) itu sendiri
-        require(assetToken.balanceOf(address(assetToken)) >= amount, "Saham habis!");
-
-        // --- PROSES TRANSAKSI ---
+        require(assetToken.transferFrom(address(assetToken), msg.sender, _amount), "Gagal kirim Saham");
         
-        // A. Tarik IDRT dari Pembeli ke Vending Machine (sebagai modal usaha)
-        bool successPayment = paymentToken.transferFrom(msg.sender, address(this), cost);
-        require(successPayment, "Gagal tarik IDRT");
-
-        // B. Kirim Saham dari Gudang (MesinShare) ke Pembeli
-        // Karena MesinShare sudah men-approve VendingMachine (di langkah sebelumnya),
-        // kita bisa pakai transferFrom.
-        // Dari: address(assetToken) -> Gudang
-        // Ke: msg.sender -> Investor
-        bool successShare = assetToken.transferFrom(address(assetToken), msg.sender, amount);
-        require(successShare, "Gagal kirim Saham");
-
-        // (Opsional) Update dividen tracker jika perlu, tapi untuk simpelnya begini dulu.
+        growthFund += cost; 
     }
 }
