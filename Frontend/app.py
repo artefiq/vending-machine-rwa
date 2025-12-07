@@ -114,7 +114,7 @@ def check_and_approve(token_contract, owner_addr, spender_addr, amount, private_
 # ==========================================
 # 3. FUNGSI BACA DATA (DARI TEMAN ANDA)
 # ==========================================
-def get_financial_data():
+def get_financial_data():eve
     try:
         revenue = contract.functions.totalRevenue().call()
         growth_fund = contract.functions.growthFund().call()
@@ -190,7 +190,28 @@ def get_all_events():
             "Detail": f"ID: {e['args']['id']} | {pType} | {desc}",
             "Pelaku": "DAO"
         })
-    # 7. Profit Distributed
+
+     # 7. Event Voting Masuk
+    for e in contract.events.Voted.create_filter(from_block=0).get_all_entries():
+        events_list.append({
+            "Block": e['blockNumber'],
+            "LogIndex": e['logIndex'],
+            "Aktivitas": "✋ VOTING MASUK",
+            "Detail": f"Vote Proposal #{e['args']['proposalId']} | Power: {e['args']['weight']/10**18:,.0f}",
+            "Pelaku": short_addr(e['args']['voter'])
+        })
+
+    # 8. Event Proposal Dieksekusi
+    for e in contract.events.ProposalExecuted.create_filter(from_block=0).get_all_entries():
+        events_list.append({
+            "Block": e['blockNumber'],
+            "LogIndex": e['logIndex'],
+            "Aktivitas": "✅ PROPOSAL DEAL",
+            "Detail": f"Proposal ID #{e['args']['id']} Berhasil Dieksekusi",
+            "Pelaku": "System Auto"
+        })
+
+    # 9. Profit Distributed
     for e in contract.events.ProfitDistributed.create_filter(from_block=0).get_all_entries():
         events_list.append({
             "Block": e['blockNumber'], "LogIndex": e['logIndex'],
