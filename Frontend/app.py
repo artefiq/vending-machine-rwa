@@ -134,16 +134,27 @@ def get_financial_data():
         revenue = contract.functions.totalRevenue().call()
         growth_fund = contract.functions.growthFund().call()
         reserve = contract.functions.getOperationalReserve().call()
+        
+        # Ambil data Dividen
         div_distributed = contract.functions.totalDividendsDistributed().call()
+        div_claimed = contract.functions.totalDividendsClaimed().call()
+        
+        # Hitung Selisih (Unclaimed)
+        div_unclaimed = div_distributed - div_claimed
         
         return {
             "Total Omzet": fmt_rupiah(revenue),
             "Growth Fund": fmt_rupiah(growth_fund),
             "Kas Operasional": fmt_rupiah(reserve),
-            "Total Dividen": fmt_rupiah(div_distributed)
+            "Total Dividen": fmt_rupiah(div_distributed),
+            "Unclaimed Dividen": fmt_rupiah(div_unclaimed) # <--- Data Baru
         }
     except:
-        return {"Total Omzet": "0", "Growth Fund": "0", "Kas Operasional": "0", "Total Dividen": "0"}
+        return {
+            "Total Omzet": "0", "Growth Fund": "0", 
+            "Kas Operasional": "0", "Total Dividen": "0",
+            "Unclaimed Dividen": "0"
+        }
 
 def get_all_events():
     events_list = []
@@ -233,19 +244,25 @@ def get_all_events():
 # ==========================================
 def page_dashboard():
     st.title("🤖 Vending Machine DAO Dashboard")
-    st.markdown("Monitor aktivitas blockchain secara Real-Time.")
+    st.markdown("Monitor transparansi keuangan & operasional blockchain secara Real-Time.")
 
     if w3.is_connected():
         st.caption(f"Status: 🟢 Terhubung ke Blockchain")
     else:
         st.error("Gagal terhubung ke Ganache.")
 
-    col1, col2, col3, col4 = st.columns(4)
+    # --- UPDATE DISINI (JADI 5 KOLOM) ---
+    col1, col2, col3, col4, col5 = st.columns(5)
+    
     fin = get_financial_data()
+    
     col1.metric("Total Omzet", f"Rp {fin['Total Omzet']}")
     col2.metric("Growth Fund", f"Rp {fin['Growth Fund']}")
     col3.metric("Kas Operasional", f"Rp {fin['Kas Operasional']}")
     col4.metric("Total Dividen", f"Rp {fin['Total Dividen']}")
+    
+    # Metrik Baru: Saldo Dividen Mengendap
+    col5.metric("Unclaimed Dividen", f"Rp {fin['Unclaimed Dividen']}") 
 
     st.divider()
 

@@ -15,7 +15,7 @@ MY_MACHINE_ID = 1
 RPC_URL = "http://127.0.0.1:7545" # Sesuaikan dengan Ganache/Testnet
 
 # 3. Alamat Smart Contract Fleet (Update setiap deploy ulang!)
-CONTRACT_ADDRESS = "0xcE331548f69d35C033E95cfc13eB6829781FeAb7" 
+CONTRACT_ADDRESS = "0xf8F15cb408C22BE3f6dCecF806e9a4872f19Db5d" 
 
 # 4. ABI (Update dari Remix setelah compile VendingMachineFleet.sol)
 # Pastikan ABI ini milik VendingMachineFleet, bukan contract lama.
