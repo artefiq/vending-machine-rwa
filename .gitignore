@@ -1,1 +1,4 @@
 /Application/backend-dao/__pycache__
+/Frontend/.env
+.deps/
+artifacts/
