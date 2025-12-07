@@ -114,7 +114,7 @@ def check_and_approve(token_contract, owner_addr, spender_addr, amount, private_
 # ==========================================
 # 3. FUNGSI BACA DATA (DARI TEMAN ANDA)
 # ==========================================
-def get_financial_data():eve
+def get_financial_data():
     try:
         revenue = contract.functions.totalRevenue().call()
         growth_fund = contract.functions.growthFund().call()
