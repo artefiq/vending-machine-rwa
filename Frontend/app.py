@@ -3,32 +3,50 @@ from web3 import Web3
 import pandas as pd
 import json
 import time
+import os
+from dotenv import load_dotenv
 
 # ==========================================
-# 1. KONFIGURASI & SETUP
+# 1. KONFIGURASI & SETUP (DARI ENV)
 # ==========================================
 st.set_page_config(page_title="Vending DAO Super App", layout="wide", page_icon="☕")
 
-GANACHE_URL = "http://127.0.0.1:7545" 
-# GANTI DENGAN ALAMAT CONTRACT TERBARU DI SINI 👇
-CONTRACT_ADDRESS = "0xe46D6d237Ec4021024b18BebB11dF4F2cB9819E9" 
+# Load environment variables
+load_dotenv()
 
-# Inisialisasi Session State untuk Web3 agar tidak reload terus
+# Ambil data dari .env
+GANACHE_URL = os.getenv("GANACHE_URL")
+CONTRACT_ADDRESS = os.getenv("CONTRACT_ADDRESS")
+PAYMENT_TOKEN_ADDR = os.getenv("PAYMENT_TOKEN_ADDRESS")
+ASSET_TOKEN_ADDR = os.getenv("ASSET_TOKEN_ADDRESS")
+
+# Validasi sederhana
+if not CONTRACT_ADDRESS or not PAYMENT_TOKEN_ADDR:
+    st.error("Konfigurasi .env belum lengkap! Pastikan CONTRACT_ADDRESS dan Token Address sudah diisi.")
+    st.stop()
+
+# Inisialisasi Session State Web3
 if "w3" not in st.session_state:
     st.session_state.w3 = Web3(Web3.HTTPProvider(GANACHE_URL))
 
 w3 = st.session_state.w3
 
-# Load ABI Utama
+# -------------------------------------------
+# LOAD SMART CONTRACT (DAO)
+# -------------------------------------------
 try:
     with open('abi.json', 'r') as f:
         contract_abi = json.load(f)
+    # Gunakan address dari env
     contract = w3.eth.contract(address=CONTRACT_ADDRESS, abi=contract_abi)
 except Exception as e:
-    st.error(f"Gagal memuat abi.json: {e}")
+    st.error(f"Gagal memuat abi.json atau address salah: {e}")
     st.stop()
 
-# Load Token Contract (Minimal ABI untuk Approve & Cek Saldo)
+# -------------------------------------------
+# LOAD TOKEN CONTRACTS (IDRT & SAHAM)
+# -------------------------------------------
+# ABI Standar ERC20 (Minimal)
 ERC20_ABI = [
     {"constant": True, "inputs": [{"name": "_owner", "type": "address"}], "name": "balanceOf", "outputs": [{"name": "balance", "type": "uint256"}], "type": "function"},
     {"constant": False, "inputs": [{"name": "_spender", "type": "address"}, {"name": "_value", "type": "uint256"}], "name": "approve", "outputs": [{"name": "", "type": "bool"}], "type": "function"},
@@ -36,12 +54,11 @@ ERC20_ABI = [
 ]
 
 try:
-    PAYMENT_TOKEN_ADDR = contract.functions.paymentToken().call()
-    ASSET_TOKEN_ADDR = contract.functions.assetToken().call()
+    # Langsung load contract pakai address dari .env
     payment_token = w3.eth.contract(address=PAYMENT_TOKEN_ADDR, abi=ERC20_ABI)
     asset_token = w3.eth.contract(address=ASSET_TOKEN_ADDR, abi=ERC20_ABI)
-except:
-    st.toast("Warning: Gagal load token address. Pastikan contract sudah deploy.", icon="⚠️")
+except Exception as e:
+    st.toast(f"Warning: Gagal load token. Cek alamat di .env", icon="⚠️")
 
 # ==========================================
 # 2. HELPER FUNCTIONS
