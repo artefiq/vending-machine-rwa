@@ -7,54 +7,48 @@ import os
 from dotenv import load_dotenv
 
 # ==========================================
-# 1. KONFIGURASI & SETUP (DARI ENV)
+# 1. KONFIGURASI & SETUP
 # ==========================================
 st.set_page_config(page_title="Vending DAO Super App", layout="wide", page_icon="☕")
 
 # Load environment variables
 load_dotenv()
 
-# Ambil data dari .env
 GANACHE_URL = os.getenv("GANACHE_URL")
 CONTRACT_ADDRESS = os.getenv("CONTRACT_ADDRESS")
 PAYMENT_TOKEN_ADDR = os.getenv("PAYMENT_TOKEN_ADDRESS")
 ASSET_TOKEN_ADDR = os.getenv("ASSET_TOKEN_ADDRESS")
 
-# Validasi sederhana
 if not CONTRACT_ADDRESS or not PAYMENT_TOKEN_ADDR:
-    st.error("Konfigurasi .env belum lengkap! Pastikan CONTRACT_ADDRESS dan Token Address sudah diisi.")
+    st.error("⚠️ Konfigurasi .env belum lengkap! Pastikan address sudah diisi.")
     st.stop()
 
-# Inisialisasi Session State Web3
 if "w3" not in st.session_state:
     st.session_state.w3 = Web3(Web3.HTTPProvider(GANACHE_URL))
 
 w3 = st.session_state.w3
 
-# -------------------------------------------
-# LOAD SMART CONTRACT (DAO)
-# -------------------------------------------
-try:
-    with open('abi.json', 'r') as f:
-        contract_abi = json.load(f)
-    # Gunakan address dari env
-    contract = w3.eth.contract(address=CONTRACT_ADDRESS, abi=contract_abi)
-except Exception as e:
-    st.error(f"Gagal memuat abi.json atau address salah: {e}")
-    st.stop()
+# Load ABI Helper
+def load_abi():
+    try:
+        with open('abi.json', 'r') as f:
+            return json.load(f)
+    except Exception as e:
+        st.error(f"Gagal memuat abi.json: {e}")
+        st.stop()
 
-# -------------------------------------------
-# LOAD TOKEN CONTRACTS (IDRT & SAHAM)
-# -------------------------------------------
-# ABI Standar ERC20 (Minimal)
+contract_abi = load_abi()
+contract = w3.eth.contract(address=CONTRACT_ADDRESS, abi=contract_abi)
+
+# Load Token Contracts (ERC20 Standard)
 ERC20_ABI = [
     {"constant": True, "inputs": [{"name": "_owner", "type": "address"}], "name": "balanceOf", "outputs": [{"name": "balance", "type": "uint256"}], "type": "function"},
     {"constant": False, "inputs": [{"name": "_spender", "type": "address"}, {"name": "_value", "type": "uint256"}], "name": "approve", "outputs": [{"name": "", "type": "bool"}], "type": "function"},
-    {"constant": True, "inputs": [{"name": "_owner", "type": "address"}, {"name": "_spender", "type": "address"}], "name": "allowance", "outputs": [{"name": "", "type": "uint256"}], "type": "function"}
+    {"constant": True, "inputs": [{"name": "_owner", "type": "address"}, {"name": "_spender", "type": "address"}], "name": "allowance", "outputs": [{"name": "", "type": "uint256"}], "type": "function"},
+    {"constant": False, "inputs": [], "name": "mintaUangGratis", "outputs": [], "type": "function"} 
 ]
 
 try:
-    # Langsung load contract pakai address dari .env
     payment_token = w3.eth.contract(address=PAYMENT_TOKEN_ADDR, abi=ERC20_ABI)
     asset_token = w3.eth.contract(address=ASSET_TOKEN_ADDR, abi=ERC20_ABI)
 except Exception as e:
@@ -72,7 +66,6 @@ def short_addr(address):
     return "Unknown"
 
 def send_transaction(func_call, account_addr, private_key, value=0):
-    """Helper untuk mengirim transaksi Write ke Blockchain"""
     try:
         nonce = w3.eth.get_transaction_count(account_addr)
         tx_data = func_call.build_transaction({
@@ -85,44 +78,51 @@ def send_transaction(func_call, account_addr, private_key, value=0):
         })
         signed_tx = w3.eth.account.sign_transaction(tx_data, private_key)
         tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
-        return w3.to_hex(tx_hash)
+        
+        receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+        if receipt.status == 1:
+            return w3.to_hex(tx_hash)
+        else:
+            return "ERROR: Transaksi Revert (Gagal)"
     except Exception as e:
         return f"ERROR: {str(e)}"
 
-def check_and_approve(token_contract, owner_addr, spender_addr, amount, private_key):
-    """Otomatis cek allowance dan approve jika kurang"""
-    allowance = token_contract.functions.allowance(owner_addr, spender_addr).call()
-    if allowance < amount:
-        with st.spinner("⏳ Allowance kurang. Melakukan Approval token..."):
-            try:
+def check_and_approve(token_contract, owner_addr, spender_addr, amount_wei, private_key):
+    """
+    KEAMANAN: Cek allowance dan approve HANYA SEJUMLAH yang dibutuhkan (Exact Amount).
+    """
+    try:
+        allowance = token_contract.functions.allowance(owner_addr, spender_addr).call()
+        
+        if allowance < amount_wei:
+            st.info(f"🔒 Keamanan: Meminta izin akses token sebesar {amount_wei/10**18:,.0f}...")
+            with st.spinner("⏳ Sedang memproses Approval..."):
+                # APPROVE EXACT AMOUNT ONLY
                 tx_hash = send_transaction(
-                    token_contract.functions.approve(spender_addr, amount),
+                    token_contract.functions.approve(spender_addr, amount_wei), 
                     owner_addr, private_key
                 )
+                
                 if "ERROR" in tx_hash:
                     st.error(tx_hash)
                     return False
-                w3.eth.wait_for_transaction_receipt(tx_hash)
-                st.success("✅ Approve Berhasil!")
-                time.sleep(1)
-                return True
-            except Exception as e:
-                st.error(f"Gagal Approve: {e}")
-                return False
-    return True
+                
+                st.toast("✅ Izin Diberikan (Approve Success)!", icon="🔐")
+                time.sleep(2) # Jeda agar blockchain sync
+                
+        return True 
+    except Exception as e:
+        st.error(f"Gagal Cek Allowance: {e}")
+        return False
 
 # ==========================================
-# 3. FUNGSI BACA DATA (DARI TEMAN ANDA)
+# 3. FUNGSI BACA DATA
 # ==========================================
 def get_financial_data():
     try:
         revenue = contract.functions.totalRevenue().call()
         growth_fund = contract.functions.growthFund().call()
-        # Fallback jika fungsi getOperationalReserve tidak ada di ABI lama
-        try:
-            reserve = contract.functions.getOperationalReserve().call()
-        except:
-            reserve = 0 
+        reserve = contract.functions.getOperationalReserve().call()
         div_distributed = contract.functions.totalDividendsDistributed().call()
         
         return {
@@ -137,8 +137,6 @@ def get_financial_data():
 def get_all_events():
     events_list = []
     
-    # Logic pengambilan event dari kode teman Anda (Dipertahankan karena bagus pakai LogIndex)
-    
     # 1. Jualan
     for e in contract.events.CoffeeOrdered.create_filter(from_block=0).get_all_entries():
         events_list.append({
@@ -151,9 +149,9 @@ def get_all_events():
     for e in contract.events.ExpensePaid.create_filter(from_block=0).get_all_entries():
         events_list.append({
             "Block": e['blockNumber'], "LogIndex": e['logIndex'],
-            "Aktivitas": f"💸 KELUAR: {e['args'].get('category', 'Expense')}", # Handle if category not exists
+            "Aktivitas": f"💸 KELUAR: {e['args']['category']}", 
             "Detail": f"Note: {e['args']['note']} | -Rp {fmt_rupiah(e['args']['amount'])}",
-            "Pelaku": short_addr(e['args']['to'])
+            "Pelaku": f"To: {short_addr(e['args']['to'])}"
         })
     # 3. IPO
     for e in contract.events.SharesPurchased.create_filter(from_block=0).get_all_entries():
@@ -181,7 +179,6 @@ def get_all_events():
         })
     # 6. Proposal
     for e in contract.events.ProposalCreated.create_filter(from_block=0).get_all_entries():
-        # Handle perbedaan nama args (desc vs description)
         desc = e['args'].get('desc', e['args'].get('description', '-'))
         pType = e['args'].get('pType', '-')
         events_list.append({
@@ -190,33 +187,28 @@ def get_all_events():
             "Detail": f"ID: {e['args']['id']} | {pType} | {desc}",
             "Pelaku": "DAO"
         })
-
-     # 7. Event Voting Masuk
+    # 7. Voting
     for e in contract.events.Voted.create_filter(from_block=0).get_all_entries():
         events_list.append({
-            "Block": e['blockNumber'],
-            "LogIndex": e['logIndex'],
+            "Block": e['blockNumber'], "LogIndex": e['logIndex'],
             "Aktivitas": "✋ VOTING MASUK",
             "Detail": f"Vote Proposal #{e['args']['proposalId']} | Power: {e['args']['weight']/10**18:,.0f}",
             "Pelaku": short_addr(e['args']['voter'])
         })
-
-    # 8. Event Proposal Dieksekusi
+    # 8. Executed
     for e in contract.events.ProposalExecuted.create_filter(from_block=0).get_all_entries():
         events_list.append({
-            "Block": e['blockNumber'],
-            "LogIndex": e['logIndex'],
+            "Block": e['blockNumber'], "LogIndex": e['logIndex'],
             "Aktivitas": "✅ PROPOSAL DEAL",
             "Detail": f"Proposal ID #{e['args']['id']} Berhasil Dieksekusi",
             "Pelaku": "System Auto"
         })
-
-    # 9. Profit Distributed
+    # 9. Profit
     for e in contract.events.ProfitDistributed.create_filter(from_block=0).get_all_entries():
         events_list.append({
             "Block": e['blockNumber'], "LogIndex": e['logIndex'],
             "Aktivitas": "📊 BAGI HASIL",
-            "Detail": f"Dividen: Rp {fmt_rupiah(e['args']['dividendAmount'])} | Growth: Rp {fmt_rupiah(e['args']['growthAmount'])}",
+            "Detail": f"Div: Rp {fmt_rupiah(e['args']['dividendAmount'])} | Growth: Rp {fmt_rupiah(e['args']['growthAmount'])}",
             "Pelaku": "System"
         })
 
@@ -230,15 +222,13 @@ def get_all_events():
 # ==========================================
 def page_dashboard():
     st.title("🤖 Vending Machine DAO Dashboard")
-    st.markdown("Monitor transparansi keuangan & operasional blockchain secara Real-Time.")
+    st.markdown("Monitor aktivitas blockchain secara Real-Time.")
 
-    # Status Koneksi
     if w3.is_connected():
-        st.caption(f"Status: 🟢 Terhubung ke {GANACHE_URL}")
+        st.caption(f"Status: 🟢 Terhubung ke Blockchain")
     else:
         st.error("Gagal terhubung ke Ganache.")
 
-    # Metrics
     col1, col2, col3, col4 = st.columns(4)
     fin = get_financial_data()
     col1.metric("Total Omzet", f"Rp {fin['Total Omzet']}")
@@ -248,8 +238,6 @@ def page_dashboard():
 
     st.divider()
 
-    # Tabel Log
-    st.subheader("📜 Riwayat Blok (Blockchain Ledger)")
     if st.button("🔄 Refresh Manual"):
         st.rerun()
 
@@ -265,14 +253,13 @@ def page_dashboard():
             hide_index=True
         )
     else:
-        st.info("Belum ada aktivitas di smart contract ini.")
-
-    # Auto refresh logic (Hanya di halaman Dashboard agar form input di halaman lain tidak reset)
+        st.info("Belum ada aktivitas.")
+    
     time.sleep(5)
     st.rerun()
 
 # ==========================================
-# 5. HALAMAN INVESTOR (TRANSAKSI) - UPDATE
+# 5. HALAMAN INVESTOR (TRANSAKSI)
 # ==========================================
 def page_investor():
     st.title("💰 Panel Investor")
@@ -281,7 +268,7 @@ def page_investor():
     pk_investor = st.sidebar.text_input("Private Key Investor", type="password")
 
     if not pk_investor:
-        st.warning("Masukkan Private Key di sidebar kiri untuk mengakses fitur.")
+        st.warning("Masukkan Private Key.")
         return
 
     try:
@@ -292,75 +279,68 @@ def page_investor():
         st.sidebar.error("Key Invalid")
         return
 
-    # --- AMBIL DATA ---
-    # 1. Cek Saham ($MESIN)
-    my_shares = asset_token.functions.balanceOf(my_addr).call()
-    # 2. Cek Dividen di Contract DAO
-    my_div = contract.functions.getWithdrawableDividend(my_addr).call()
-    # 3. Cek Saldo Rupiah (IDRT) di Wallet <-- INI TAMBAHANNYA
-    my_idrt = payment_token.functions.balanceOf(my_addr).call()
-    
-    share_price = contract.functions.sharePrice().call()
+    try:
+        my_shares = asset_token.functions.balanceOf(my_addr).call()
+        my_div = contract.functions.getWithdrawableDividend(my_addr).call()
+        my_idrt = payment_token.functions.balanceOf(my_addr).call()
+        share_price = contract.functions.sharePrice().call()
+    except Exception as e:
+        st.error(f"Gagal ambil data user: {e}")
+        return
 
-    # --- TAMPILAN DASHBOARD ---
-    # Kita bagi jadi 3 Kolom sekarang
     c1, c2, c3 = st.columns(3)
-    
     c1.info(f"**Saham Saya:**\n\n{my_shares / 10**18:,.0f} Lembar")
     c2.success(f"**Dividen Siap Cair:**\n\nRp {fmt_rupiah(my_div)}")
-    # Tampilkan saldo IDRT dengan warna kuning (warning) biar beda
     c3.warning(f"**Saldo Wallet:**\n\nRp {fmt_rupiah(my_idrt)}")
 
-    # --- FITUR TAMBAHAN: FAUCET (Minta Uang Dummy) ---
-    # Jika saldo < 10.000, tampilkan tombol minta uang (biar gampang ngetes)
     if my_idrt < 10000 * 10**18:
-        st.info("💡 Saldo IDRT Anda habis? Klik tombol di bawah untuk minta uang dummy (Faucet).")
-        if st.button("💸 Minta 100.000 IDRT Gratis"):
+        if st.button("💸 Minta 100rb IDRT (Faucet)"):
             try:
-                # Asumsi di contract RupiahToken ada fungsi mintaUangGratis()
-                # Jika tidak ada, Anda harus transfer manual dari admin
-                # Cek ABI RupiahToken dulu apakah ada fungsi mint/faucet public
                 tx = send_transaction(payment_token.functions.mintaUangGratis(), my_addr, pk_investor)
-                if "ERROR" in tx: 
-                    st.error("Gagal minta uang (Mungkin fungsi faucet tidak ada di contract token)")
-                else:
+                if "ERROR" in tx: st.error("Faucet gagal.")
+                else: 
                     st.success(f"Uang masuk! Hash: {tx}")
-                    time.sleep(2)
+                    time.sleep(1)
                     st.rerun()
             except:
-                st.error("Fitur Faucet tidak tersedia di Token Contract ini.")
+                st.error("Faucet tidak tersedia.")
 
     st.divider()
 
-    # --- TABS MENU ---
-    tab1, tab2, tab3 = st.tabs(["Beli Saham (IPO)", "Klaim Dividen", "Voting DAO"])
+    tab1, tab2, tab3, tab4 = st.tabs(["Beli Saham (IPO)", "Klaim Dividen", "Voting DAO", "Transfer Saham"])
 
+    # --- BELI SAHAM ---
     with tab1:
         st.subheader("Beli Saham Baru")
         st.write(f"Harga IPO: **Rp {fmt_rupiah(share_price)} / lembar**")
         
-        col_input, col_total = st.columns(2)
-        with col_input:
+        c_in, c_tot = st.columns(2)
+        with c_in:
             amount_buy = st.number_input("Jumlah Lembar", min_value=1, value=10)
         
-        total_cost = amount_buy * share_price
+        # Total cost harus dalam Wei
+        total_cost_wei = amount_buy * share_price 
         
-        with col_total:
-            st.metric("Total Bayar", f"Rp {fmt_rupiah(total_cost)}")
+        with c_tot:
+            st.metric("Total Bayar", f"Rp {fmt_rupiah(total_cost_wei)}")
         
-        # Validasi Saldo UI
-        if my_idrt < total_cost:
-            st.error(f"❌ Saldo Wallet Kurang! Anda butuh Rp {fmt_rupiah(total_cost)}")
-        else:
-            if st.button("Beli Saham Sekarang"):
-                if check_and_approve(payment_token, my_addr, CONTRACT_ADDRESS, total_cost, pk_investor):
-                    tx = send_transaction(contract.functions.buyShares(amount_buy), my_addr, pk_investor)
+        if st.button("Beli Saham Sekarang"):
+            if my_idrt < total_cost_wei:
+                st.error("Saldo Kurang!")
+            else:
+                # 1. Cek & Approve (Exact Amount)
+                if check_and_approve(payment_token, my_addr, CONTRACT_ADDRESS, total_cost_wei, pk_investor):
+                    # 2. Konversi input user ke Wei
+                    amount_buy_wei = int(amount_buy * 10**18)
+                    # 3. Transaksi
+                    tx = send_transaction(contract.functions.buyShares(amount_buy_wei), my_addr, pk_investor)
                     if "ERROR" in tx: st.error(tx)
                     else: 
                         st.success(f"Sukses! Hash: {tx}")
                         time.sleep(2)
                         st.rerun()
 
+    # --- KLAIM DIVIDEN ---
     with tab2:
         st.subheader("Pencairan Dividen")
         if my_div > 0:
@@ -372,27 +352,46 @@ def page_investor():
                     time.sleep(2)
                     st.rerun()
         else:
-            st.info("Belum ada dividen yang bisa ditarik.")
+            st.info("Belum ada dividen.")
 
+    # --- VOTING ---
     with tab3:
         st.subheader("Voting Proposal")
         p_count = contract.functions.proposalCount().call()
         active_props = []
         for i in range(1, p_count + 1):
             p = contract.functions.proposals(i).call()
-            # Cek executed status (index ke-6 di struct Proposal terakhir)
+            # p[6] = executed
             if not p[6]: 
-                active_props.append(f"ID {p[0]}: {p[4]}") # ID dan Desc
+                # p[4] = description
+                active_props.append(f"ID {p[0]}: {p[4]}")
 
         if active_props:
-            sel = st.selectbox("Pilih Proposal", active_props)
+            sel = st.selectbox("Pilih Proposal Aktif", active_props)
             p_id = int(sel.split(":")[0].replace("ID ", ""))
+            st.caption("Klik vote, jika suara > 50% proposal otomatis tereksekusi.")
             if st.button("Vote Setuju"):
                 tx = send_transaction(contract.functions.vote(p_id), my_addr, pk_investor)
                 if "ERROR" in tx: st.error(tx)
                 else: st.success("Vote Masuk!")
         else:
             st.info("Tidak ada proposal aktif.")
+
+    # --- TRANSFER SAHAM ---
+    with tab4:
+        st.subheader("Transfer Saham (P2P)")
+        to_addr = st.text_input("Alamat Penerima (0x...)")
+        amount_trf = st.number_input("Jumlah Saham", min_value=1)
+        
+        if st.button("Kirim Saham"):
+            amount_trf_wei = int(amount_trf * 10**18)
+            
+            # 1. Cek & Approve (Exact Amount) - Approve ke Contract DAO
+            if check_and_approve(asset_token, my_addr, CONTRACT_ADDRESS, amount_trf_wei, pk_investor):
+                # 2. Transaksi
+                tx = send_transaction(contract.functions.transferSaham(to_addr, amount_trf_wei), my_addr, pk_investor)
+                if "ERROR" in tx: st.error(tx)
+                else: st.success(f"Saham Terkirim! Hash: {tx}")
 
 # ==========================================
 # 6. HALAMAN ADMIN (OPERASIONAL)
@@ -410,7 +409,6 @@ def page_admin():
     try:
         account = w3.eth.account.from_key(pk_admin)
         admin_addr = account.address
-        # Cek Owner
         if admin_addr != contract.functions.owner().call():
             st.error("Wallet ini bukan Owner contract!")
             return
@@ -419,50 +417,52 @@ def page_admin():
         st.sidebar.error("Key Invalid")
         return
 
-    t1, t2, t3, t4 = st.tabs(["Mesin", "Keuangan", "Proposal", "Eksekusi"])
+    t1, t2, t3, t4 = st.tabs(["Mesin & Harga", "Gaji Rutin", "Buat Proposal", "Eksekusi Manual"])
 
     with t1:
-        st.subheader("Tambah Mesin")
-        loc = st.text_input("Lokasi Mesin")
+        st.subheader("Manajemen Aset")
+        loc = st.text_input("Lokasi Mesin Baru")
         if st.button("Add Machine"):
             tx = send_transaction(contract.functions.addMachine(loc), admin_addr, pk_admin)
             if "ERROR" in tx: st.error(tx)
             else: st.success(f"Mesin ditambahkan! Hash: {tx}")
         
-        st.subheader("Ubah Harga")
+        st.divider()
+        st.subheader("Update Harga")
         np = st.number_input("Harga Kopi (IDRT)", value=15000)
-        nc = st.number_input("Modal (COGS)", value=5000)
-        if st.button("Update Harga"):
-            tx = send_transaction(contract.functions.setCoffeePrice(int(np*10**18)), admin_addr, pk_admin)
+        
+        if st.button("Set Harga"):
+            # Konversi ke Wei
+            price_wei = int(np * 10**18)
+            tx = send_transaction(contract.functions.setCoffeePrice(price_wei), admin_addr, pk_admin)
             if "ERROR" in tx: st.error(tx)
             else: st.success("Harga diupdate.")
-            # Note: setCogs belum diimplementasi di tombol ini, bisa ditambah jika perlu
 
     with t2:
-        st.subheader("Bayar Vendor (Operasional)")
-        vendor = st.text_input("Address Vendor")
-        amt = st.number_input("Jumlah (IDRT)", min_value=1000)
-        reason = st.text_input("Keperluan (Misal: Listrik)")
+        st.subheader("Bayar Gaji Harian")
+        st.caption("Nominal gaji diambil otomatis dari database Proposal.")
         
-        if st.button("Bayar Tagihan"):
-            # Perlu parameter 'category' di fungsi ExpensePaid jika versi contract baru
-            # Asumsi fungsi: payMonthlySalary(address) ATAU logic manual via proposal
-            st.info("Gunakan fitur Proposal untuk pengeluaran besar. Gunakan ini untuk gaji rutin.")
-            if st.button("Bayar Gaji Staff (Via Address)"):
-                tx = send_transaction(contract.functions.payMonthlySalary(vendor), admin_addr, pk_admin)
-                if "ERROR" in tx: st.error(tx)
-                else: st.success(f"Gaji terbayar. Hash: {tx}")
+        staff_addr = st.text_input("Address Staff")
+        
+        if st.button("Bayar Gaji Hari Ini"):
+            tx = send_transaction(contract.functions.payDailySalary(staff_addr), admin_addr, pk_admin)
+            if "ERROR" in tx: st.error(tx)
+            else: st.success(f"Gaji Harian Terbayar! Hash: {tx}")
 
     with t3:
-        st.subheader("Buat Proposal Baru")
-        ptype = st.selectbox("Tipe Proposal", ["0: Beli Mesin", "1: Beli Stok", "2: Gaji", "3: Add Vendor"])
+        st.subheader("Buat Proposal DAO")
+        
+        ptype = st.selectbox("Tipe Proposal", ["0: Beli Mesin", "1: Beli Stok", "2: Set Gaji Harian", "3: Add Vendor"])
         ptype_int = int(ptype.split(":")[0])
-        p_target = st.text_input("Target Address")
-        p_amount = st.number_input("Jumlah Dana (IDRT)", min_value=0)
-        p_desc = st.text_input("Deskripsi")
+        
+        p_target = st.text_input("Target Address (Vendor/Staff)")
+        p_amount = st.number_input("Jumlah (IDRT/Gaji)", min_value=0)
+        p_desc = st.text_input("Deskripsi / Nama")
         
         if st.button("Submit Proposal"):
+            # Konversi ke Wei
             amt_wei = int(p_amount * 10**18)
+            
             func = None
             if ptype_int == 0: func = contract.functions.proposeBuyMachine(p_target, amt_wei, p_desc)
             elif ptype_int == 1: func = contract.functions.proposeBuyStock(p_target, amt_wei, p_desc)
@@ -475,15 +475,15 @@ def page_admin():
                 else: st.success(f"Proposal dibuat! Hash: {tx}")
 
     with t4:
-        st.subheader("Eksekusi Proposal (Jika Vote > 50%)")
+        st.subheader("Eksekusi Manual")
         ex_id = st.number_input("ID Proposal", min_value=1)
-        if st.button("Eksekusi"):
+        if st.button("Paksa Eksekusi"):
             tx = send_transaction(contract.functions.executeProposal(ex_id), admin_addr, pk_admin)
             if "ERROR" in tx: st.error(tx)
-            else: st.success(f"Proposal Dieksekusi! Hash: {tx}")
+            else: st.success(f"Dieksekusi! Hash: {tx}")
 
 # ==========================================
-# 7. HALAMAN SIMULASI (PUBLIK)
+# 7. HALAMAN SIMULASI BELI KOPI
 # ==========================================
 def page_simulation():
     st.title("☕ Simulasi Beli Kopi")
@@ -491,22 +491,32 @@ def page_simulation():
     pk_buyer = st.text_input("Private Key Pembeli (Simulasi Scan QR)", type="password")
     mid = st.number_input("ID Mesin", min_value=1, value=1)
     
-    price = contract.functions.coffeePrice().call()
-    st.info(f"Harga: **Rp {fmt_rupiah(price)}**")
+    try:
+        price_wei = contract.functions.coffeePrice().call()
+        st.info(f"Harga: **Rp {fmt_rupiah(price_wei)}**")
+    except:
+        st.warning("Gagal ambil harga.")
+        price_wei = 0
 
     if st.button("Bayar & Tuang Kopi"):
         if not pk_buyer:
             st.error("Butuh Private Key")
             return
-        buyer = w3.eth.account.from_key(pk_buyer)
         
-        with st.spinner("Processing..."):
-            if check_and_approve(payment_token, buyer.address, CONTRACT_ADDRESS, price, pk_buyer):
-                tx = send_transaction(contract.functions.buyCoffee(mid), buyer.address, pk_buyer)
-                if "ERROR" in tx: st.error(tx)
-                else: 
-                    st.balloons()
-                    st.success(f"Kopi Keluar! Hash: {tx}")
+        try:
+            buyer = w3.eth.account.from_key(pk_buyer)
+            buyer_addr = buyer.address
+            
+            with st.spinner("Processing Payment..."):
+                # Cek & Approve (Exact Amount)
+                if check_and_approve(payment_token, buyer_addr, CONTRACT_ADDRESS, price_wei, pk_buyer):
+                    tx = send_transaction(contract.functions.buyCoffee(mid), buyer_addr, pk_buyer)
+                    if "ERROR" in tx: st.error(tx)
+                    else: 
+                        st.balloons()
+                        st.success(f"Kopi Keluar! Hash: {tx}")
+        except Exception as e:
+            st.error(f"Error: {e}")
 
 # ==========================================
 # MAIN NAVIGATION
