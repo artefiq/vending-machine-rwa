@@ -66,8 +66,11 @@ def short_addr(address):
     return "Unknown"
 
 def send_transaction(func_call, account_addr, private_key, value=0):
+    """Helper untuk mengirim transaksi Write ke Blockchain"""
     try:
         nonce = w3.eth.get_transaction_count(account_addr)
+        
+        # Build transaction
         tx_data = func_call.build_transaction({
             'chainId': 1337, 
             'gas': 3000000,
@@ -76,14 +79,22 @@ def send_transaction(func_call, account_addr, private_key, value=0):
             'from': account_addr,
             'value': value
         })
-        signed_tx = w3.eth.account.sign_transaction(tx_data, private_key)
-        tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
         
+        # Sign Transaction
+        signed_tx = w3.eth.account.sign_transaction(tx_data, private_key)
+        
+        # --- PERBAIKAN DI SINI ---
+        # Ganti .rawTransaction menjadi .raw_transaction (snake_case)
+        tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
+        
+        # Wait for receipt
         receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+        
         if receipt.status == 1:
             return w3.to_hex(tx_hash)
         else:
             return "ERROR: Transaksi Revert (Gagal)"
+            
     except Exception as e:
         return f"ERROR: {str(e)}"
 
@@ -312,27 +323,41 @@ def page_investor():
     # --- BELI SAHAM ---
     with tab1:
         st.subheader("Beli Saham Baru")
+        
+        # 1. AMBIL DATA STOK TERSEDIA
+        try:
+            available_shares_wei = contract.functions.getAvailableShares().call()
+            available_shares = int(available_shares_wei / 10**18)
+            st.info(f"📦 Stok Tersedia: **{available_shares:,.0f} Lembar**")
+        except:
+            st.warning("Gagal mengambil data stok.")
+            available_shares_wei = 0
+            available_shares = 0
+
         st.write(f"Harga IPO: **Rp {fmt_rupiah(share_price)} / lembar**")
         
         c_in, c_tot = st.columns(2)
         with c_in:
-            amount_buy = st.number_input("Jumlah Lembar", min_value=1, value=10)
+            # Set max_value input box agar user tidak bisa ketik lebih dari stok
+            max_input = available_shares if available_shares > 0 else 1
+            amount_buy = st.number_input("Jumlah Lembar", min_value=1, max_value=max_input, value=1)
         
-        # Total cost harus dalam Wei
         total_cost_wei = amount_buy * share_price 
         
         with c_tot:
             st.metric("Total Bayar", f"Rp {fmt_rupiah(total_cost_wei)}")
         
         if st.button("Beli Saham Sekarang"):
-            if my_idrt < total_cost_wei:
-                st.error("Saldo Kurang!")
+            amount_buy_wei = int(amount_buy * 10**18)
+
+            # 2. VALIDASI GANDA (Stok & Uang)
+            if amount_buy_wei > available_shares_wei:
+                st.error(f"❌ Stok tidak cukup! Sisa: {available_shares} lembar.")
+            elif my_idrt < total_cost_wei:
+                st.error(f"❌ Saldo Wallet Kurang! Butuh Rp {fmt_rupiah(total_cost_wei)}")
             else:
-                # 1. Cek & Approve (Exact Amount)
+                # 3. EKSEKUSI
                 if check_and_approve(payment_token, my_addr, CONTRACT_ADDRESS, total_cost_wei, pk_investor):
-                    # 2. Konversi input user ke Wei
-                    amount_buy_wei = int(amount_buy * 10**18)
-                    # 3. Transaksi
                     tx = send_transaction(contract.functions.buyShares(amount_buy_wei), my_addr, pk_investor)
                     if "ERROR" in tx: st.error(tx)
                     else: 
