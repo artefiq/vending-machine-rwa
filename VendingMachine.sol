@@ -17,33 +17,41 @@ contract VendingMachineDAO {
     IERC20 public assetToken; 
     address public owner; 
 
+    // Ekonomi
     uint256 public coffeePrice = 15000 * 10**18; 
     uint256 public cogsPerCup = 5000 * 10**18;   
 
+    // Neraca
     uint256 public totalRevenue;
     uint256 public growthFund; 
     uint256 public totalDividendsDistributed;
     uint256 public totalDividendsClaimed;
 
-    // Config
-    uint256 public constant REINVEST_RATE = 20; 
-    uint256 public constant DIVIDEND_RATE = 80; 
+    // Config Profit (Eksplisit)
+    uint256 public constant REINVEST_RATE = 20; // 20% Masuk Growth Fund
+    uint256 public constant DIVIDEND_RATE = 80; // 80% Masuk Dividen
     uint256 constant MAGNITUDE = 2**128;
-    
-    // ANTI-WHALE CONFIG (Maksimal kepemilikan 40%)
-    uint256 public constant MAX_WALLET_PERCENT = 40; 
 
+    // ANTI-WHALE (Max kepemilikan saham 40%)
+    uint256 public constant MAX_WALLET_PERCENT = 40; 
+    
     // Dividen Tracker
     uint256 public magnifiedDividendPerShare;
     mapping(address => int256) public magnifiedDividendCorrections;
     mapping(address => uint256) public withdrawnDividends;
 
-    uint256 public sharePrice = 1000;
+    // IPO
+    uint256 public sharePrice = 1000 * 10**18;
 
     // =========================================================
     // 2. DATABASE OPERASIONAL
     // =========================================================
+    
+    // Database Gaji HARIAN (Address Staff => Nominal Per Hari)
     mapping(address => uint256) public staffSalaries;
+    
+    // Pencatat Waktu Gaji Terakhir (Agar admin gak bisa double bayar di hari yang sama)
+    mapping(address => uint256) public lastPaid;
 
     struct Machine {
         uint256 id;
@@ -54,6 +62,7 @@ contract VendingMachineDAO {
     mapping(uint256 => Machine) public machines; 
     uint256 public machineCount;
 
+    // Whitelist Vendor
     mapping(address => bool) public isWhitelisted;
 
     // =========================================================
@@ -61,10 +70,10 @@ contract VendingMachineDAO {
     // =========================================================
     
     enum ProposalType { 
-        BUY_MACHINE,    // 0
-        BUY_STOCK,      // 1
-        UPDATE_SALARY,  // 2
-        ADD_VENDOR      // 3
+        BUY_MACHINE,    // 0: Beli Mesin
+        BUY_STOCK,      // 1: Beli Bahan Baku
+        UPDATE_SALARY,  // 2: Set Gaji Harian Staff
+        ADD_VENDOR      // 3: Whitelist Vendor
     }
 
     struct Proposal {
@@ -121,11 +130,15 @@ contract VendingMachineDAO {
         machines[_machineId].totalSales += price;
         totalRevenue += price;
 
+        // 1. Modal Pokok (COGS) otomatis mengendap di contract.
+        
+        // 2. Hitung Profit Bersih
         uint256 grossProfit = 0;
         if (price > cogsPerCup) {
             grossProfit = price - cogsPerCup;
         }
 
+        // 3. Bagi Hasil (Hanya jika ada profit)
         if (grossProfit > 0) {
             uint256 amountGrowth = (grossProfit * REINVEST_RATE) / 100; 
             uint256 amountDividend = (grossProfit * DIVIDEND_RATE) / 100;
@@ -142,14 +155,24 @@ contract VendingMachineDAO {
     }
 
     // =========================================================
-    // BAGIAN B: FITUR ADMIN (OPERASIONAL)
+    // BAGIAN B: FITUR ADMIN (OPERASIONAL HARIAN)
     // =========================================================
 
-    function payMonthlySalary(address _staff) external onlyOwner noReentrancy {
-        uint256 salaryAmount = staffSalaries[_staff];
-        require(salaryAmount > 0, "Gaji belum diset via Proposal!");
-        _processPaymentSmart(_staff, salaryAmount);
-        emit ExpensePaid("GAJI BULANAN", _staff, salaryAmount, "Gaji Rutin");
+    // Bayar Gaji HARIAN (Tinggal Klik tiap hari)
+    function payDailySalary(address _staff) external onlyOwner noReentrancy {
+        uint256 dailyRate = staffSalaries[_staff];
+        require(dailyRate > 0, "Gaji harian belum diset via Proposal!");
+        
+        // Cek: Apakah sudah gajian hari ini? (Cooldown 1 hari)
+        require(block.timestamp >= lastPaid[_staff] + 1 days, "Hari ini sudah gajian!");
+
+        // Update waktu bayar terakhir
+        lastPaid[_staff] = block.timestamp;
+        
+        // Bayar pakai logika cerdas (Operasional -> Growth Fund)
+        _processPaymentSmart(_staff, dailyRate);
+        
+        emit ExpensePaid("GAJI HARIAN", _staff, dailyRate, "Gaji Rutin Harian");
     }
 
     function addMachine(string memory _loc) external onlyOwner {
@@ -162,7 +185,7 @@ contract VendingMachineDAO {
     }
 
     // =========================================================
-    // BAGIAN C: PROPOSAL DAO (HANYA OWNER YANG BISA AJUKAN)
+    // BAGIAN C: PROPOSAL DAO (HANYA OWNER YANG AJUKAN)
     // =========================================================
 
     // 1. Proposal Beli Mesin
@@ -170,14 +193,14 @@ contract VendingMachineDAO {
         _createProposal(ProposalType.BUY_MACHINE, _vendor, _price, _desc);
     }
 
-    // 2. Proposal Beli Bahan Baku
+    // 2. Proposal Beli Bahan Baku (Restock)
     function proposeBuyStock(address _vendor, uint256 _price, string memory _desc) external onlyOwner {
         _createProposal(ProposalType.BUY_STOCK, _vendor, _price, _desc);
     }
 
-    // 3. Proposal Set Gaji Pokok
-    function proposeUpdateSalary(address _staff, uint256 _newSalary, string memory _alasan) external onlyOwner {
-        _createProposal(ProposalType.UPDATE_SALARY, _staff, _newSalary, _alasan);
+    // 3. Proposal Set Gaji HARIAN
+    function proposeUpdateSalary(address _staff, uint256 _dailyAmount, string memory _alasan) external onlyOwner {
+        _createProposal(ProposalType.UPDATE_SALARY, _staff, _dailyAmount, _alasan);
     }
 
     // 4. Proposal Tambah Vendor
@@ -185,23 +208,29 @@ contract VendingMachineDAO {
         _createProposal(ProposalType.ADD_VENDOR, _vendor, 0, _nama);
     }
 
-    // --- VOTING SYSTEM (Investor tetap harus Vote) ---
-    function vote(uint256 _id) external {
+    // --- VOTING SYSTEM (AUTO EXECUTE) ---
+    function vote(uint256 _id) external noReentrancy {
         Proposal storage p = proposals[_id];
         require(block.timestamp < p.endTime, "Waktu Habis");
         require(!p.hasVoted[msg.sender], "Sudah Vote");
+        require(!p.executed, "Sudah Selesai");
+
         uint256 weight = assetToken.balanceOf(msg.sender);
         require(weight > 0, "No Token");
+        
         p.hasVoted[msg.sender] = true;
         p.voteCount += weight;
+        
         emit Voted(_id, msg.sender, weight);
+
+        // AUTO-EXECUTE: Jika suara > 50%, langsung eksekusi sekarang!
+        if (p.voteCount > assetToken.totalSupply() / 2) {
+            _executeLogic(p);
+        }
     }
 
-    function executeProposal(uint256 _id) external noReentrancy {
-        Proposal storage p = proposals[_id];
-        require(!p.executed, "Sudah Dieksekusi");
-        require(p.voteCount > assetToken.totalSupply() / 2, "Suara Kurang");
-
+    // Mesin Eksekusi Internal (Jalan otomatis)
+    function _executeLogic(Proposal storage p) internal {
         p.executed = true;
 
         if (p.pType == ProposalType.BUY_MACHINE) {
@@ -217,37 +246,33 @@ contract VendingMachineDAO {
             emit ExpensePaid("BELI BAHAN", p.target, p.amount, p.description);
 
         } else if (p.pType == ProposalType.UPDATE_SALARY) {
-            staffSalaries[p.target] = p.amount;
+            staffSalaries[p.target] = p.amount; // Set Gaji Harian
             if (!isWhitelisted[p.target]) isWhitelisted[p.target] = true;
 
         } else if (p.pType == ProposalType.ADD_VENDOR) {
             isWhitelisted[p.target] = true;
         }
-        emit ProposalExecuted(_id, true);
+        emit ProposalExecuted(p.id, true);
     }
 
     // =========================================================
-    // BAGIAN D: INVESTOR (IPO & SAHAM) - DENGAN ANTI-WHALE
+    // BAGIAN D: INVESTOR (ANTI-WHALE 40%)
     // =========================================================
 
-    // Fungsi Helper untuk Cek Limit 40%
     function _checkMaxWallet(address _user, uint256 _amountToAdd) internal view {
         uint256 totalSupply = assetToken.totalSupply();
         uint256 maxLimit = (totalSupply * MAX_WALLET_PERCENT) / 100;
         uint256 currentBal = assetToken.balanceOf(_user);
-        
-        require(currentBal + _amountToAdd <= maxLimit, "Max Wallet Limit 40% Reached!");
+        require(currentBal + _amountToAdd <= maxLimit, "Max Wallet Limit 40%");
     }
 
     function buyShares(uint256 _amount) external noReentrancy {
         uint256 available = assetToken.balanceOf(address(assetToken));
         require(available >= _amount, "Sold Out");
 
-        // CEK ANTI-WHALE (40%)
-        _checkMaxWallet(msg.sender, _amount);
+        _checkMaxWallet(msg.sender, _amount); // Cek Limit
 
-        uint256 cost = (_amount * sharePrice);
-        
+        uint256 cost = (_amount * sharePrice) / 10**18;
         require(paymentToken.transferFrom(msg.sender, address(this), cost), "Gagal Bayar IDRT");
         require(assetToken.transferFrom(address(assetToken), msg.sender, _amount), "Gagal Kirim Saham");
         
@@ -257,11 +282,9 @@ contract VendingMachineDAO {
     }
 
     function transferSaham(address _to, uint256 _amount) external noReentrancy {
-        // CEK ANTI-WHALE (40%) untuk Penerima
-        _checkMaxWallet(_to, _amount);
+        _checkMaxWallet(_to, _amount); // Cek Limit Penerima
 
         require(assetToken.transferFrom(msg.sender, _to, _amount), "Gagal Transfer");
-        
         int256 corr = int256(magnifiedDividendPerShare * _amount);
         magnifiedDividendCorrections[msg.sender] += corr;
         magnifiedDividendCorrections[_to] -= corr;

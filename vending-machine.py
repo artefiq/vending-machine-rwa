@@ -380,19 +380,6 @@ CONTRACT_ABI = '''
 		"type": "function"
 	},
 	{
-		"inputs": [
-			{
-				"internalType": "uint256",
-				"name": "_id",
-				"type": "uint256"
-			}
-		],
-		"name": "executeProposal",
-		"outputs": [],
-		"stateMutability": "nonpayable",
-		"type": "function"
-	},
-	{
 		"inputs": [],
 		"name": "getAvailableShares",
 		"outputs": [
@@ -464,6 +451,25 @@ CONTRACT_ABI = '''
 				"internalType": "bool",
 				"name": "",
 				"type": "bool"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "address",
+				"name": "",
+				"type": "address"
+			}
+		],
+		"name": "lastPaid",
+		"outputs": [
+			{
+				"internalType": "uint256",
+				"name": "",
+				"type": "uint256"
 			}
 		],
 		"stateMutability": "view",
@@ -569,7 +575,7 @@ CONTRACT_ABI = '''
 				"type": "address"
 			}
 		],
-		"name": "payMonthlySalary",
+		"name": "payDailySalary",
 		"outputs": [],
 		"stateMutability": "nonpayable",
 		"type": "function"
@@ -727,7 +733,7 @@ CONTRACT_ABI = '''
 			},
 			{
 				"internalType": "uint256",
-				"name": "_newSalary",
+				"name": "_dailyAmount",
 				"type": "uint256"
 			},
 			{
