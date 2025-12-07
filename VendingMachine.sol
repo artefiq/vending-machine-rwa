@@ -184,6 +184,12 @@ contract VendingMachineDAO {
         coffeePrice = _price;
     }
 
+    function setCogs(uint256 _newCogs) external onlyOwner {
+        cogsPerCup = _newCogs;
+        // Opsional: Bisa tambah event kalau mau lebih canggih
+        // emit CogsUpdated(_newCogs);
+    }
+
     // =========================================================
     // BAGIAN C: PROPOSAL DAO (HANYA OWNER YANG AJUKAN)
     // =========================================================

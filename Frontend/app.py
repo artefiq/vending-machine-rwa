@@ -428,15 +428,30 @@ def page_admin():
             else: st.success(f"Mesin ditambahkan! Hash: {tx}")
         
         st.divider()
-        st.subheader("Update Harga")
-        np = st.number_input("Harga Kopi (IDRT)", value=15000)
+        st.subheader("Update Ekonomi")
         
-        if st.button("Set Harga"):
-            # Konversi ke Wei
-            price_wei = int(np * 10**18)
-            tx = send_transaction(contract.functions.setCoffeePrice(price_wei), admin_addr, pk_admin)
-            if "ERROR" in tx: st.error(tx)
-            else: st.success("Harga diupdate.")
+        # Kolom Berdampingan (Kiri: Harga Jual, Kanan: Modal HPP)
+        col_p, col_c = st.columns(2)
+        
+        with col_p:
+            np = st.number_input("Harga Jual (IDRT)", value=15000)
+            if st.button("Set Harga Jual"):
+                price_wei = int(np * 10**18)
+                tx = send_transaction(contract.functions.setCoffeePrice(price_wei), admin_addr, pk_admin)
+                if "ERROR" in tx: st.error(tx)
+                else: st.success("Harga Jual Diupdate.")
+
+        with col_c:
+            nc = st.number_input("Modal HPP (COGS)", value=5000)
+            if st.button("Set Modal HPP"):
+                cogs_wei = int(nc * 10**18)
+                # Pastikan fungsi setCogs sudah ada di Smart Contract!
+                try:
+                    tx = send_transaction(contract.functions.setCogs(cogs_wei), admin_addr, pk_admin)
+                    if "ERROR" in tx: st.error(tx)
+                    else: st.success("Modal HPP Diupdate.")
+                except:
+                    st.error("Fungsi setCogs tidak ditemukan di Smart Contract ini.")
 
     with t2:
         st.subheader("Bayar Gaji Harian")
