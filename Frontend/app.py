@@ -272,7 +272,7 @@ def page_dashboard():
     st.rerun()
 
 # ==========================================
-# 5. HALAMAN INVESTOR (TRANSAKSI)
+# 5. HALAMAN INVESTOR (TRANSAKSI) - UPDATE
 # ==========================================
 def page_investor():
     st.title("💰 Panel Investor")
@@ -292,36 +292,87 @@ def page_investor():
         st.sidebar.error("Key Invalid")
         return
 
-    # Info Portofolio
+    # --- AMBIL DATA ---
+    # 1. Cek Saham ($MESIN)
     my_shares = asset_token.functions.balanceOf(my_addr).call()
+    # 2. Cek Dividen di Contract DAO
     my_div = contract.functions.getWithdrawableDividend(my_addr).call()
+    # 3. Cek Saldo Rupiah (IDRT) di Wallet <-- INI TAMBAHANNYA
+    my_idrt = payment_token.functions.balanceOf(my_addr).call()
+    
     share_price = contract.functions.sharePrice().call()
 
-    c1, c2 = st.columns(2)
-    c1.info(f"**Saham Saya:** {my_shares / 10**18:,.0f} Lembar")
-    c2.success(f"**Dividen Siap Cair:** Rp {fmt_rupiah(my_div)}")
+    # --- TAMPILAN DASHBOARD ---
+    # Kita bagi jadi 3 Kolom sekarang
+    c1, c2, c3 = st.columns(3)
+    
+    c1.info(f"**Saham Saya:**\n\n{my_shares / 10**18:,.0f} Lembar")
+    c2.success(f"**Dividen Siap Cair:**\n\nRp {fmt_rupiah(my_div)}")
+    # Tampilkan saldo IDRT dengan warna kuning (warning) biar beda
+    c3.warning(f"**Saldo Wallet:**\n\nRp {fmt_rupiah(my_idrt)}")
 
+    # --- FITUR TAMBAHAN: FAUCET (Minta Uang Dummy) ---
+    # Jika saldo < 10.000, tampilkan tombol minta uang (biar gampang ngetes)
+    if my_idrt < 10000 * 10**18:
+        st.info("💡 Saldo IDRT Anda habis? Klik tombol di bawah untuk minta uang dummy (Faucet).")
+        if st.button("💸 Minta 100.000 IDRT Gratis"):
+            try:
+                # Asumsi di contract RupiahToken ada fungsi mintaUangGratis()
+                # Jika tidak ada, Anda harus transfer manual dari admin
+                # Cek ABI RupiahToken dulu apakah ada fungsi mint/faucet public
+                tx = send_transaction(payment_token.functions.mintaUangGratis(), my_addr, pk_investor)
+                if "ERROR" in tx: 
+                    st.error("Gagal minta uang (Mungkin fungsi faucet tidak ada di contract token)")
+                else:
+                    st.success(f"Uang masuk! Hash: {tx}")
+                    time.sleep(2)
+                    st.rerun()
+            except:
+                st.error("Fitur Faucet tidak tersedia di Token Contract ini.")
+
+    st.divider()
+
+    # --- TABS MENU ---
     tab1, tab2, tab3 = st.tabs(["Beli Saham (IPO)", "Klaim Dividen", "Voting DAO"])
 
     with tab1:
         st.subheader("Beli Saham Baru")
         st.write(f"Harga IPO: **Rp {fmt_rupiah(share_price)} / lembar**")
-        amount_buy = st.number_input("Jumlah Lembar", min_value=1, value=10)
-        total_cost = amount_buy * share_price
-        st.write(f"Total Bayar: Rp {fmt_rupiah(total_cost)}")
         
-        if st.button("Beli Saham Sekarang"):
-            if check_and_approve(payment_token, my_addr, CONTRACT_ADDRESS, total_cost, pk_investor):
-                tx = send_transaction(contract.functions.buyShares(amount_buy), my_addr, pk_investor)
-                if "ERROR" in tx: st.error(tx)
-                else: st.success(f"Sukses! Hash: {tx}")
+        col_input, col_total = st.columns(2)
+        with col_input:
+            amount_buy = st.number_input("Jumlah Lembar", min_value=1, value=10)
+        
+        total_cost = amount_buy * share_price
+        
+        with col_total:
+            st.metric("Total Bayar", f"Rp {fmt_rupiah(total_cost)}")
+        
+        # Validasi Saldo UI
+        if my_idrt < total_cost:
+            st.error(f"❌ Saldo Wallet Kurang! Anda butuh Rp {fmt_rupiah(total_cost)}")
+        else:
+            if st.button("Beli Saham Sekarang"):
+                if check_and_approve(payment_token, my_addr, CONTRACT_ADDRESS, total_cost, pk_investor):
+                    tx = send_transaction(contract.functions.buyShares(amount_buy), my_addr, pk_investor)
+                    if "ERROR" in tx: st.error(tx)
+                    else: 
+                        st.success(f"Sukses! Hash: {tx}")
+                        time.sleep(2)
+                        st.rerun()
 
     with tab2:
         st.subheader("Pencairan Dividen")
-        if st.button("💸 Cairkan Semua Dividen"):
-            tx = send_transaction(contract.functions.claimDividends(), my_addr, pk_investor)
-            if "ERROR" in tx: st.error(tx)
-            else: st.success(f"Dividen Cair! Hash: {tx}")
+        if my_div > 0:
+            if st.button("💸 Cairkan Semua Dividen"):
+                tx = send_transaction(contract.functions.claimDividends(), my_addr, pk_investor)
+                if "ERROR" in tx: st.error(tx)
+                else: 
+                    st.success(f"Dividen Cair! Hash: {tx}")
+                    time.sleep(2)
+                    st.rerun()
+        else:
+            st.info("Belum ada dividen yang bisa ditarik.")
 
     with tab3:
         st.subheader("Voting Proposal")
@@ -398,9 +449,9 @@ def page_admin():
             # Asumsi fungsi: payMonthlySalary(address) ATAU logic manual via proposal
             st.info("Gunakan fitur Proposal untuk pengeluaran besar. Gunakan ini untuk gaji rutin.")
             if st.button("Bayar Gaji Staff (Via Address)"):
-                 tx = send_transaction(contract.functions.payMonthlySalary(vendor), admin_addr, pk_admin)
-                 if "ERROR" in tx: st.error(tx)
-                 else: st.success(f"Gaji terbayar. Hash: {tx}")
+                tx = send_transaction(contract.functions.payMonthlySalary(vendor), admin_addr, pk_admin)
+                if "ERROR" in tx: st.error(tx)
+                else: st.success(f"Gaji terbayar. Hash: {tx}")
 
     with t3:
         st.subheader("Buat Proposal Baru")
