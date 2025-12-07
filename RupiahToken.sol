@@ -11,7 +11,7 @@ contract RupiahToken is ERC20, Ownable {
         _mint(msg.sender, 1_000_000 * 10**18);
     }
 
-    // Fungsi untuk Owner mencetak uang tambahan (misal untuk user lain)
+    // Fungsi untuk Owner mencetak uang tambahan (untuk Testing)
     function mint(address to, uint256 amount) external onlyOwner {
         _mint(to, amount);
     }

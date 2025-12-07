@@ -8,17 +8,43 @@ interface IERC20 {
     function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
 }
 
-contract VendingMachineFleet {
+contract VendingMachineDAO {
     
-    // --- 1. VARIABEL UTAMA ---
-    IERC20 public paymentToken; // Token Pembayaran (IDRT)
-    IERC20 public assetToken; // Token Saham ($MESIN)
-    address public owner; // Admin/Deployer
-    uint256 public coffeePrice = 15000 * 10**18; // Harga Kopi
+    // =========================================================
+    // 1. SETUP KEUANGAN & TOKEN
+    // =========================================================
+    IERC20 public paymentToken; 
+    IERC20 public assetToken; 
+    address public owner; 
+
+    uint256 public coffeePrice = 15000 * 10**18; 
+    uint256 public cogsPerCup = 5000 * 10**18;   
+
     uint256 public totalRevenue;
-    // Variabel Modal Pokok
-    uint256 public cogsPerCup = 5000 * 10**18;
-    // --- 2. MANAJEMEN ARMADA ---
+    uint256 public growthFund; 
+    uint256 public totalDividendsDistributed;
+    uint256 public totalDividendsClaimed;
+
+    // Config
+    uint256 public constant REINVEST_RATE = 20; 
+    uint256 public constant DIVIDEND_RATE = 80; 
+    uint256 constant MAGNITUDE = 2**128;
+    
+    // ANTI-WHALE CONFIG (Maksimal kepemilikan 40%)
+    uint256 public constant MAX_WALLET_PERCENT = 40; 
+
+    // Dividen Tracker
+    uint256 public magnifiedDividendPerShare;
+    mapping(address => int256) public magnifiedDividendCorrections;
+    mapping(address => uint256) public withdrawnDividends;
+
+    uint256 public sharePrice = 1000;
+
+    // =========================================================
+    // 2. DATABASE OPERASIONAL
+    // =========================================================
+    mapping(address => uint256) public staffSalaries;
+
     struct Machine {
         uint256 id;
         string location;
@@ -28,235 +54,295 @@ contract VendingMachineFleet {
     mapping(uint256 => Machine) public machines; 
     uint256 public machineCount;
 
-    // --- 3. KEUANGAN ---
-    uint256 public accumulatedRevenue;  
-    uint256 public growthFund;          
+    mapping(address => bool) public isWhitelisted;
+
+    // =========================================================
+    // 3. SYSTEM DAO (PROPOSAL)
+    // =========================================================
     
-    uint256 public constant REINVEST_RATE = 20; 
-    uint256 public constant DIVIDEND_RATE = 80; 
+    enum ProposalType { 
+        BUY_MACHINE,    // 0
+        BUY_STOCK,      // 1
+        UPDATE_SALARY,  // 2
+        ADD_VENDOR      // 3
+    }
 
-    // Sistem Dividen
-    uint256 constant MAGNITUDE = 2**128;
-    uint256 public magnifiedDividendPerShare;
-    mapping(address => int256) public magnifiedDividendCorrections;
-    mapping(address => uint256) public withdrawnDividends;
-
-    // Harga saham (IPO)
-    uint256 public sharePrice = 1000 * 10**18;
-
-    // --- 4. GOVERNANCE ---
-    mapping(address => bool) public isWhitelistedVendor;
-    
     struct Proposal {
-        address proposedVendor;
-        string description;
+        uint256 id;
+        ProposalType pType;
+        address target;         
+        uint256 amount;         
+        string description;     
         uint256 voteCount;
         bool executed;
         uint256 endTime;
         mapping(address => bool) hasVoted;
     }
-    Proposal[] public proposals;
 
-    // --- 5. KEAMANAN ---
-    bool private locked;
+    mapping(uint256 => Proposal) public proposals;
+    uint256 public proposalCount;
 
-    // --- EVENTS ---
+    // =========================================================
+    // 4. EVENTS & SECURITY
+    // =========================================================
+    event ProposalCreated(uint256 id, string pType, string desc);
+    event ProposalExecuted(uint256 id, bool success);
+    event Voted(uint256 proposalId, address voter, uint256 weight);
+    
     event CoffeeOrdered(uint256 indexed machineId, address buyer, uint256 amount);
-    event MachineAdded(uint256 id, string location);
-    event OpexPaid(address vendor, uint256 amount, string reason);
     event ProfitDistributed(uint256 dividendAmount, uint256 growthAmount);
-    event GrowthFundUsed(address vendor, uint256 amount, string reason);
+    event SharesPurchased(address investor, uint256 amount, uint256 cost);
+    event ShareTransferred(address from, address to, uint256 amount);
     event DividendClaimed(address investor, uint256 amount);
-    event VendorWhitelisted(address vendor);
-    event PriceUpdated(uint256 newPrice); // Event baru jika harga berubah
+    event ExpensePaid(string category, address to, uint256 amount, string note);
 
-    // Constructor: Tambahkan _coffeePrice
-    constructor(address _paymentToken, address _assetToken, uint256 _coffeePrice) {
-        paymentToken = IERC20(_paymentToken);
-        assetToken = IERC20(_assetToken);
-        coffeePrice = _coffeePrice; // Set harga awal di sini
-        owner = msg.sender;
-        isWhitelistedVendor[msg.sender] = true; 
-    }
-
+    bool private locked;
     modifier onlyOwner() { require(msg.sender == owner, "Hanya Admin"); _; }
     modifier noReentrancy() { require(!locked, "Reentrancy!"); locked = true; _; locked = false; }
 
-    // =========================================================
-    // FUNGSI ADMIN: UBAH HARGA
-    // =========================================================
-    // Fitur baru: Admin bisa mengubah harga kopi global jika inflasi
-    function setCoffeePrice(uint256 _newPrice) external onlyOwner {
-        coffeePrice = _newPrice;
-        emit PriceUpdated(_newPrice);
-    }
-
-    function setCogs(uint256 _newCogs) external onlyOwner {
-        cogsPerCup = _newCogs;
+    constructor(address _paymentToken, address _assetToken, uint256 _coffeePrice) {
+        paymentToken = IERC20(_paymentToken);
+        assetToken = IERC20(_assetToken);
+        coffeePrice = _coffeePrice; 
+        owner = msg.sender;
+        isWhitelisted[msg.sender] = true; 
     }
 
     // =========================================================
-    // BAGIAN A: SKALABILITAS
-    // =========================================================
-    function addMachine(string memory _location) external onlyOwner {
-        machineCount++;
-        machines[machineCount] = Machine(machineCount, _location, true, 0);
-        emit MachineAdded(machineCount, _location);
-    }
-
-    // =========================================================
-    // BAGIAN B: TRANSAKSI PELANGGAN (PERBAIKAN UTAMA)
+    // BAGIAN A: BISNIS UTAMA (BELI KOPI)
     // =========================================================
     
     function buyCoffee(uint256 _machineId) external noReentrancy {
-        require(machines[_machineId].isActive, "Mesin Tidak Aktif");
+        require(machines[_machineId].isActive, "Mesin Mati");
         
-        uint256 priceToPay = coffeePrice; // Misal 15.000
-        require(paymentToken.balanceOf(msg.sender) >= priceToPay, "Saldo Kurang");
+        uint256 price = coffeePrice; 
+        require(paymentToken.transferFrom(msg.sender, address(this), price), "Gagal Bayar");
 
-        // 1. Tarik FULL Harga (15.000) ke Contract
-        require(paymentToken.transferFrom(msg.sender, address(this), priceToPay), "Gagal Bayar");
+        machines[_machineId].totalSales += price;
+        totalRevenue += price;
 
-        // 2. Akumulasi Data Omzet
-        machines[_machineId].totalSales += priceToPay;
-        accumulatedRevenue += priceToPay;
-
-        // --- LOGIKA POTONG MODAL (BARU) ---
-        
-        // Hitung Profit Kotor (Gross Profit)
-        // Profit = Harga Jual (15rb) - Modal (5rb) = 10rb
         uint256 grossProfit = 0;
-        if (priceToPay > cogsPerCup) {
-            grossProfit = priceToPay - cogsPerCup;
+        if (price > cogsPerCup) {
+            grossProfit = price - cogsPerCup;
         }
 
-        // Uang 5.000 (Modal) DIBIARKAN mengendap di contract (accumulatedRevenue)
-        // Uang ini nanti dipakai Owner lewat 'payOperationalCost' untuk beli stok.
-
-        // --- ALOKASI PROFIT (10.000) ---
-        
-        // Dari 10rb Profit:
-        // 20% (2rb) -> Growth Fund (Beli Mesin Baru)
-        // 80% (8rb) -> Dividen Investor
-        
         if (grossProfit > 0) {
             uint256 amountGrowth = (grossProfit * REINVEST_RATE) / 100; 
-            uint256 amountDividend = grossProfit - amountGrowth;
+            uint256 amountDividend = (grossProfit * DIVIDEND_RATE) / 100;
 
-            // Masukkan ke Tabungan Ekspansi
             growthFund += amountGrowth;
+            totalDividendsDistributed += amountDividend;
 
-            // Bagikan Dividen ke Investor
             if (assetToken.totalSupply() > 0) {
                 magnifiedDividendPerShare += (amountDividend * MAGNITUDE) / assetToken.totalSupply();
                 emit ProfitDistributed(amountDividend, amountGrowth);
             }
         }
-
-        // 3. Trigger IoT
-        emit CoffeeOrdered(_machineId, msg.sender, priceToPay);
+        emit CoffeeOrdered(_machineId, msg.sender, price);
     }
 
     // =========================================================
-    // BAGIAN C: OPERASIONAL
+    // BAGIAN B: FITUR ADMIN (OPERASIONAL)
     // =========================================================
 
-    function payOperationalCost(address _vendor, uint256 _amount, string memory _note) external onlyOwner {
-        require(isWhitelistedVendor[_vendor], "Vendor Ilegal");
-        require(paymentToken.balanceOf(address(this)) >= _amount, "Kas Kurang");
-        
-        paymentToken.transfer(_vendor, _amount);
-        emit OpexPaid(_vendor, _amount, _note);
+    function payMonthlySalary(address _staff) external onlyOwner noReentrancy {
+        uint256 salaryAmount = staffSalaries[_staff];
+        require(salaryAmount > 0, "Gaji belum diset via Proposal!");
+        _processPaymentSmart(_staff, salaryAmount);
+        emit ExpensePaid("GAJI BULANAN", _staff, salaryAmount, "Gaji Rutin");
     }
 
-    function distributeNetProfit(uint256 _amountToDistribute) external onlyOwner {
-        require(paymentToken.balanceOf(address(this)) >= _amountToDistribute, "Saldo Kurang");
-        require(assetToken.totalSupply() > 0, "Belum ada investor");
+    function addMachine(string memory _loc) external onlyOwner {
+        machineCount++;
+        machines[machineCount] = Machine(machineCount, _loc, true, 0);
+    }
 
-        uint256 amountGrowth = (_amountToDistribute * REINVEST_RATE) / 100; 
-        uint256 amountDividend = _amountToDistribute - amountGrowth;        
+    function setCoffeePrice(uint256 _price) external onlyOwner {
+        coffeePrice = _price;
+    }
 
-        growthFund += amountGrowth;
+    // =========================================================
+    // BAGIAN C: PROPOSAL DAO (HANYA OWNER YANG BISA AJUKAN)
+    // =========================================================
 
-        magnifiedDividendPerShare += (amountDividend * MAGNITUDE) / assetToken.totalSupply();
+    // 1. Proposal Beli Mesin
+    function proposeBuyMachine(address _vendor, uint256 _price, string memory _desc) external onlyOwner {
+        _createProposal(ProposalType.BUY_MACHINE, _vendor, _price, _desc);
+    }
+
+    // 2. Proposal Beli Bahan Baku
+    function proposeBuyStock(address _vendor, uint256 _price, string memory _desc) external onlyOwner {
+        _createProposal(ProposalType.BUY_STOCK, _vendor, _price, _desc);
+    }
+
+    // 3. Proposal Set Gaji Pokok
+    function proposeUpdateSalary(address _staff, uint256 _newSalary, string memory _alasan) external onlyOwner {
+        _createProposal(ProposalType.UPDATE_SALARY, _staff, _newSalary, _alasan);
+    }
+
+    // 4. Proposal Tambah Vendor
+    function proposeAddVendor(address _vendor, string memory _nama) external onlyOwner {
+        _createProposal(ProposalType.ADD_VENDOR, _vendor, 0, _nama);
+    }
+
+    // --- VOTING SYSTEM (Investor tetap harus Vote) ---
+    function vote(uint256 _id) external {
+        Proposal storage p = proposals[_id];
+        require(block.timestamp < p.endTime, "Waktu Habis");
+        require(!p.hasVoted[msg.sender], "Sudah Vote");
+        uint256 weight = assetToken.balanceOf(msg.sender);
+        require(weight > 0, "No Token");
+        p.hasVoted[msg.sender] = true;
+        p.voteCount += weight;
+        emit Voted(_id, msg.sender, weight);
+    }
+
+    function executeProposal(uint256 _id) external noReentrancy {
+        Proposal storage p = proposals[_id];
+        require(!p.executed, "Sudah Dieksekusi");
+        require(p.voteCount > assetToken.totalSupply() / 2, "Suara Kurang");
+
+        p.executed = true;
+
+        if (p.pType == ProposalType.BUY_MACHINE) {
+            require(isWhitelisted[p.target], "Vendor Ilegal");
+            require(growthFund >= p.amount, "Dana Growth Kurang");
+            growthFund -= p.amount;
+            paymentToken.transfer(p.target, p.amount);
+            emit ExpensePaid("BELI MESIN", p.target, p.amount, p.description);
+
+        } else if (p.pType == ProposalType.BUY_STOCK) {
+            require(isWhitelisted[p.target], "Vendor Ilegal");
+            _processPaymentSmart(p.target, p.amount); 
+            emit ExpensePaid("BELI BAHAN", p.target, p.amount, p.description);
+
+        } else if (p.pType == ProposalType.UPDATE_SALARY) {
+            staffSalaries[p.target] = p.amount;
+            if (!isWhitelisted[p.target]) isWhitelisted[p.target] = true;
+
+        } else if (p.pType == ProposalType.ADD_VENDOR) {
+            isWhitelisted[p.target] = true;
+        }
+        emit ProposalExecuted(_id, true);
+    }
+
+    // =========================================================
+    // BAGIAN D: INVESTOR (IPO & SAHAM) - DENGAN ANTI-WHALE
+    // =========================================================
+
+    // Fungsi Helper untuk Cek Limit 40%
+    function _checkMaxWallet(address _user, uint256 _amountToAdd) internal view {
+        uint256 totalSupply = assetToken.totalSupply();
+        uint256 maxLimit = (totalSupply * MAX_WALLET_PERCENT) / 100;
+        uint256 currentBal = assetToken.balanceOf(_user);
         
-        emit ProfitDistributed(amountDividend, amountGrowth);
+        require(currentBal + _amountToAdd <= maxLimit, "Max Wallet Limit 40% Reached!");
+    }
+
+    function buyShares(uint256 _amount) external noReentrancy {
+        uint256 available = assetToken.balanceOf(address(assetToken));
+        require(available >= _amount, "Sold Out");
+
+        // CEK ANTI-WHALE (40%)
+        _checkMaxWallet(msg.sender, _amount);
+
+        uint256 cost = (_amount * sharePrice);
+        
+        require(paymentToken.transferFrom(msg.sender, address(this), cost), "Gagal Bayar IDRT");
+        require(assetToken.transferFrom(address(assetToken), msg.sender, _amount), "Gagal Kirim Saham");
+        
+        growthFund += cost; 
+        magnifiedDividendCorrections[msg.sender] -= int256(magnifiedDividendPerShare * _amount);
+        emit SharesPurchased(msg.sender, _amount, cost);
+    }
+
+    function transferSaham(address _to, uint256 _amount) external noReentrancy {
+        // CEK ANTI-WHALE (40%) untuk Penerima
+        _checkMaxWallet(_to, _amount);
+
+        require(assetToken.transferFrom(msg.sender, _to, _amount), "Gagal Transfer");
+        
+        int256 corr = int256(magnifiedDividendPerShare * _amount);
+        magnifiedDividendCorrections[msg.sender] += corr;
+        magnifiedDividendCorrections[_to] -= corr;
+        emit ShareTransferred(msg.sender, _to, _amount);
     }
 
     function claimDividends() external noReentrancy {
-        uint256 holderBalance = assetToken.balanceOf(msg.sender);
-        require(holderBalance > 0, "Bukan Investor");
-
-        uint256 _magnifiedDividendPerShare = magnifiedDividendPerShare;
-        int256 _correction = magnifiedDividendCorrections[msg.sender];
-        
-        uint256 accumulatableDividend = uint256(int256(holderBalance * _magnifiedDividendPerShare) + _correction) / MAGNITUDE;
-        uint256 withdrawable = accumulatableDividend - withdrawnDividends[msg.sender];
-
+        uint256 withdrawable = getWithdrawableDividend(msg.sender);
         require(withdrawable > 0, "Nihil");
-
-        withdrawnDividends[msg.sender] += withdrawable;
-        require(paymentToken.transfer(msg.sender, withdrawable), "Gagal Transfer");
         
+        withdrawnDividends[msg.sender] += withdrawable;
+        totalDividendsClaimed += withdrawable;
+
+        require(paymentToken.transfer(msg.sender, withdrawable), "Gagal");
         emit DividendClaimed(msg.sender, withdrawable);
     }
 
     // =========================================================
-    // BAGIAN D: SUSTAINABILITY
+    // HELPER & VIEW
     // =========================================================
 
-    function useGrowthFund(address _vendor, uint256 _amount) external onlyOwner {
-        require(isWhitelistedVendor[_vendor], "Vendor Ilegal");
-        require(growthFund >= _amount, "Dana Ekspansi Belum Cukup");
-
-        growthFund -= _amount;
-        paymentToken.transfer(_vendor, _amount);
-
-        emit GrowthFundUsed(_vendor, _amount, "Pembelian Mesin Baru (Reinvestasi)");
-    }
-
-    // =========================================================
-    // BAGIAN E: GOVERNANCE
-    // =========================================================
-    
-    function proposeNewVendor(address _vendor, string memory _desc) external {
-        require(assetToken.balanceOf(msg.sender) > 0, "Bukan Investor");
-        proposals.push();
-        Proposal storage p = proposals[proposals.length - 1];
-        p.proposedVendor = _vendor;
+    function _createProposal(ProposalType _type, address _target, uint256 _amt, string memory _desc) internal {
+        proposalCount++;
+        Proposal storage p = proposals[proposalCount];
+        p.id = proposalCount;
+        p.pType = _type;
+        p.target = _target;
+        p.amount = _amt;
         p.description = _desc;
         p.endTime = block.timestamp + 1 days; 
+        string memory tStr = _type == ProposalType.BUY_MACHINE ? "BELI MESIN" : 
+                             _type == ProposalType.BUY_STOCK ? "BELI BAHAN" :
+                             _type == ProposalType.UPDATE_SALARY ? "SET GAJI" : "ADD VENDOR";
+        emit ProposalCreated(proposalCount, tStr, _desc);
     }
 
-    function voteProposal(uint256 _id) external {
-        Proposal storage p = proposals[_id];
-        require(block.timestamp < p.endTime, "Waktu Habis");
-        require(!p.executed && !p.hasVoted[msg.sender], "Invalid");
+    function _processPaymentSmart(address _target, uint256 _amount) internal {
+        uint256 contractBalance = paymentToken.balanceOf(address(this));
+        require(contractBalance >= _amount, "Kas Kosong");
 
-        uint256 weight = assetToken.balanceOf(msg.sender);
-        require(weight > 0, "No Token");
-
-        p.hasVoted[msg.sender] = true;
-        p.voteCount += weight;
-
-        if (p.voteCount > assetToken.totalSupply() / 2) {
-            isWhitelistedVendor[p.proposedVendor] = true;
-            p.executed = true;
-            emit VendorWhitelisted(p.proposedVendor);
-        }
-    }
-
-    // =========================================================
-    // BAGIAN F: INVESTOR BELI SAHAM (IPO)
-    // =========================================================
-
-    function buyShares(uint256 _amount) external noReentrancy {
-        uint256 cost = _amount * sharePrice; 
-
-        require(paymentToken.transferFrom(msg.sender, address(this), cost), "Gagal bayar IDRT");
-
-        require(assetToken.transferFrom(address(assetToken), msg.sender, _amount), "Gagal kirim Saham");
+        uint256 unclaimedDividends = totalDividendsDistributed - totalDividendsClaimed;
+        uint256 lockedFunds = growthFund + unclaimedDividends;
         
-        growthFund += cost; 
+        uint256 operationalCash = 0;
+        if (contractBalance > lockedFunds) {
+            operationalCash = contractBalance - lockedFunds;
+        }
+
+        if (operationalCash < _amount) {
+            uint256 deficit = _amount - operationalCash;
+            require(growthFund >= deficit, "Modal Growth Fund Habis!");
+            growthFund -= deficit;
+        }
+        paymentToken.transfer(_target, _amount);
+    }
+
+    // --- VIEW DASHBOARD ---
+    
+    function getOperationalReserve() external view returns (uint256) {
+        uint256 currentBalance = paymentToken.balanceOf(address(this));
+        uint256 unclaimedDividends = totalDividendsDistributed - totalDividendsClaimed;
+        uint256 lockedFunds = growthFund + unclaimedDividends;
+
+        if (currentBalance > lockedFunds) {
+            return currentBalance - lockedFunds;
+        }
+        return 0;
+    }
+    
+    function getWithdrawableDividend(address _holder) public view returns (uint256) {
+        uint256 hb = assetToken.balanceOf(_holder);
+        if (hb == 0) return 0;
+        int256 acc = int256(hb * magnifiedDividendPerShare);
+        int256 corr = magnifiedDividendCorrections[_holder];
+        uint256 accumulatable = uint256(acc + corr) / MAGNITUDE;
+        uint256 withdrawn = withdrawnDividends[_holder];
+        if (accumulatable <= withdrawn) return 0;
+        return accumulatable - withdrawn;
+    }
+
+    function getAvailableShares() external view returns (uint256) {
+        return assetToken.balanceOf(address(assetToken));
     }
 }
