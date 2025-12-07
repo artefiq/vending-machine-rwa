@@ -442,7 +442,7 @@ def page_admin():
         st.sidebar.error("Key Invalid")
         return
 
-    t1, t2, t3, t4 = st.tabs(["Mesin & Harga", "Gaji Rutin", "Buat Proposal", "Eksekusi Manual"])
+    t1, t2, t3, t4 = st.tabs(["Mesin & Harga", "Gaji Rutin", "Buat Proposal", "List Mesin"])
 
     with t1:
         st.subheader("Manajemen Aset")
@@ -515,12 +515,49 @@ def page_admin():
                 else: st.success(f"Proposal dibuat! Hash: {tx}")
 
     with t4:
-        st.subheader("Eksekusi Manual")
-        ex_id = st.number_input("ID Proposal", min_value=1)
-        if st.button("Paksa Eksekusi"):
-            tx = send_transaction(contract.functions.executeProposal(ex_id), admin_addr, pk_admin)
-            if "ERROR" in tx: st.error(tx)
-            else: st.success(f"Dieksekusi! Hash: {tx}")
+        st.subheader("📍 Status Armada Vending Machine")
+        
+        # 1. Cek Total Mesin
+        try:
+            m_count = contract.functions.machineCount().call()
+        except:
+            st.error("Gagal mengambil data mesin.")
+            m_count = 0
+
+        if m_count > 0:
+            st.caption(f"Total Mesin Terdaftar: **{m_count} Unit**")
+            
+            # 2. Loop Data Mesin
+            machine_list = []
+            for i in range(1, m_count + 1):
+                # Struct: (id, location, isActive, totalSales)
+                m = contract.functions.machines(i).call()
+                
+                machine_list.append({
+                    "ID": m[0],
+                    "Lokasi": m[1],
+                    # Kolom Status dihapus sesuai request
+                    "Total Omzet": f"Rp {fmt_rupiah(m[3])}"
+                })
+            
+            # 3. Tampilkan Tabel
+            st.dataframe(
+                machine_list,
+                use_container_width=True,
+                column_config={
+                    "ID": st.column_config.NumberColumn("ID Mesin", format="%d"),
+                    "Lokasi": st.column_config.TextColumn("Lokasi Penempatan"),
+                    "Total Omzet": st.column_config.TextColumn("Total Penjualan"),
+                },
+                hide_index=True
+            )
+            
+            # Tombol Refresh khusus tab ini
+            if st.button("🔄 Refresh List Armada"):
+                st.rerun()
+                
+        else:
+            st.info("Belum ada mesin yang didaftarkan. Silakan tambah di Tab 1.")
 
 # ==========================================
 # 7. HALAMAN SIMULASI BELI KOPI
