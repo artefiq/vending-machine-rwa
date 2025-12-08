@@ -499,12 +499,46 @@ def page_admin():
         st.subheader("Bayar Gaji Harian")
         st.caption("Nominal gaji diambil otomatis dari database Proposal.")
         
-        staff_addr = st.text_input("Address Staff")
+        # Input address
+        staff_input = st.text_input("Address Staff (0x...)", placeholder="0x123...")
         
         if st.button("Bayar Gaji Hari Ini"):
-            tx = send_transaction(contract.functions.payDailySalary(staff_addr), admin_addr, pk_admin)
-            if "ERROR" in tx: st.error(tx)
-            else: st.success(f"Gaji Harian Terbayar! Hash: {tx}")
+            if not staff_input:
+                st.warning("Masukkan address staff dulu.")
+            else:
+                try:
+                    # 1. BERSIHKAN INPUT (Hapus spasi & Convert ke Checksum)
+                    clean_addr = staff_input.strip()
+                    if not w3.is_address(clean_addr):
+                        st.error("Format Address tidak valid!")
+                        st.stop()
+                        
+                    checksum_addr = w3.to_checksum_address(clean_addr)
+
+                    # 2. CEK LOGIKA DULU (Biar gak buang gas kalau bakal gagal)
+                    # Cek apakah gaji > 0?
+                    salary = contract.functions.staffSalaries(checksum_addr).call()
+                    if salary == 0:
+                        st.error("❌ Gagal: Staff ini belum diset gajinya via Proposal!")
+                        st.stop()
+                        
+                    # 3. EKSEKUSI TRANSAKSI
+                    with st.spinner("Mengirim transaksi ke Blockchain..."):
+                        tx = send_transaction(
+                            contract.functions.payDailySalary(checksum_addr), 
+                            admin_addr, 
+                            pk_admin
+                        )
+                        
+                    if "ERROR" in tx: 
+                        # Tampilkan pesan error dari Solidity (misal: "Hari ini sudah gajian!")
+                        st.error(f"Transaksi Gagal: {tx}")
+                    else: 
+                        st.balloons()
+                        st.success(f"✅ Gaji Harian Terbayar! Hash: {tx}")
+                        
+                except Exception as e:
+                    st.error(f"Terjadi kesalahan: {e}")
 
     with t3:
         st.subheader("Buat Proposal DAO")
