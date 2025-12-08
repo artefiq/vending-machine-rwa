@@ -507,7 +507,7 @@ def page_admin():
                 st.warning("Masukkan address staff dulu.")
             else:
                 try:
-                    # 1. BERSIHKAN INPUT (Hapus spasi & Convert ke Checksum)
+                    # 1. BERSIHKAN INPUT
                     clean_addr = staff_input.strip()
                     if not w3.is_address(clean_addr):
                         st.error("Format Address tidak valid!")
@@ -515,8 +515,7 @@ def page_admin():
                         
                     checksum_addr = w3.to_checksum_address(clean_addr)
 
-                    # 2. CEK LOGIKA DULU (Biar gak buang gas kalau bakal gagal)
-                    # Cek apakah gaji > 0?
+                    # 2. CEK LOGIKA GAJI 0
                     salary = contract.functions.staffSalaries(checksum_addr).call()
                     if salary == 0:
                         st.error("❌ Gagal: Staff ini belum diset gajinya via Proposal!")
@@ -529,16 +528,28 @@ def page_admin():
                             admin_addr, 
                             pk_admin
                         )
-                        
+                    
+                    # --- BAGIAN PERBAIKAN TAMPILAN ERROR ---
                     if "ERROR" in tx: 
-                        # Tampilkan pesan error dari Solidity (misal: "Hari ini sudah gajian!")
-                        st.error(f"Transaksi Gagal: {tx}")
+                        # Cek apakah pesan error mengandung kata kunci revert dari smart contract
+                        if "Hari ini sudah gajian!" in tx:
+                            st.warning("⚠️ **Transaksi Ditolak:** Staff ini sudah menerima gaji hari ini. Coba lagi besok.")
+                        
+                        elif "Gaji harian belum diset" in tx:
+                            st.warning("⚠️ **Transaksi Ditolak:** Nominal gaji belum diset.")
+                            
+                        else:
+                            # Jika errornya lain (misal gas habis atau error teknis), baru tampilkan error merah
+                            st.error("Terjadi Kesalahan Teknis.")
+                            # Tampilkan detail error hanya jika user mengklik (biar rapi)
+                            with st.expander("Lihat Detail Error"):
+                                st.code(tx)
                     else: 
                         st.balloons()
                         st.success(f"✅ Gaji Harian Terbayar! Hash: {tx}")
                         
                 except Exception as e:
-                    st.error(f"Terjadi kesalahan: {e}")
+                    st.error(f"Terjadi kesalahan sistem: {e}")
 
     with t3:
         st.subheader("Buat Proposal DAO")
